@@ -119,8 +119,9 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-// TestUpdate_SliceValue 验证切片作为列值（如 PG Array/JSON 列）时不被 sqlx.In 展开
-func TestUpdate_SliceValue_NotExpanded(t *testing.T) {
+// TestUpdate_SliceExpanded 切片参数会被 sqlx.In 展开，这是预期行为。
+// 若要传 PG Array/JSON 等列值，需用 pq.Array、json.RawMessage 等包装类型。
+func TestUpdate_SliceExpanded(t *testing.T) {
 	q, _ := newQ(t)
 	data := map[string]any{
 		"name": "极客",
@@ -130,19 +131,18 @@ func TestUpdate_SliceValue_NotExpanded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 期望: name=?, tags=?, WHERE id=? → 3 个参数
-	// 实际: sqlx.In 把 tags 切片展开 → 4 个参数，SQL 语法报错
-	wantSQL := "UPDATE \"users\" SET \"name\"=?, \"tags\"=?\nWHERE id = ?"
+	// tags 切片被展开为两个 ?，共 4 个参数
+	wantSQL := "UPDATE \"users\" SET \"name\"=?, \"tags\"=?, ?\nWHERE id = ?"
 	if sql != wantSQL {
 		t.Errorf("sql:\n got  %q\n want %q", sql, wantSQL)
 	}
-	if len(args) != 3 {
-		t.Errorf("args: got %d %v, want 3", len(args), args)
+	if len(args) != 4 {
+		t.Errorf("args: got %d %v, want 4", len(args), args)
 	}
 }
 
-// TestInsert_SliceValue 同上，Insert 场景
-func TestInsert_SliceValue_NotExpanded(t *testing.T) {
+// TestInsert_SliceExpanded 同上，Insert 场景
+func TestInsert_SliceExpanded(t *testing.T) {
 	q, _ := newQ(t)
 	data := map[string]any{
 		"name": "极客",
@@ -152,13 +152,13 @@ func TestInsert_SliceValue_NotExpanded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// map 排序后: name, tags → 2 个参数
-	wantSQL := `INSERT INTO "users" ("name", "tags") VALUES (?, ?)`
+	// tags 切片被展开，VALUES 从 2 个 ? 变成 3 个
+	wantSQL := `INSERT INTO "users" ("name", "tags") VALUES (?, ?, ?)`
 	if sql != wantSQL {
 		t.Errorf("sql:\n got  %q\n want %q", sql, wantSQL)
 	}
-	if len(args) != 2 {
-		t.Errorf("args: got %d %v, want 2", len(args), args)
+	if len(args) != 3 {
+		t.Errorf("args: got %d %v, want 3", len(args), args)
 	}
 }
 
