@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -14,7 +15,7 @@ import (
 )
 
 var (
-	formatPhPattern = regexp.MustCompile(`([#@!]?)\{([^}]+?)\}`)
+	formatPhPattern = regexp.MustCompile(`([#@!])\{([^}]+?)\}`)
 	intPattern      = regexp.MustCompile(`^\d+$`)
 )
 
@@ -82,10 +83,10 @@ func (d *StupidQL) WithContext(ctx context.Context) *StupidQL {
 }
 
 // Add 核心方法：添加 SQL 片段并解析宏
-func (d *StupidQL) Add(query string, args ...any) *StupidQL {
-	clone := d.copy()
+func (d *StupidQL) Add(query string, args ...any) (clone *StupidQL) {
+	clone = d.copy()
 	if clone.err != nil {
-		return clone
+		return
 	}
 
 	defer func() {
@@ -97,7 +98,7 @@ func (d *StupidQL) Add(query string, args ...any) *StupidQL {
 	parsedQuery, parsedArgs := clone.parseText(query, args...)
 	clone.queries = append(clone.queries, parsedQuery)
 	clone.args = append(clone.args, parsedArgs)
-	return clone
+	return
 }
 
 // AddIf 条件拼接
@@ -109,10 +110,10 @@ func (d *StupidQL) AddIf(cond bool, query string, args ...any) *StupidQL {
 }
 
 // Mark 预留或替换命名占位符
-func (d *StupidQL) Mark(name string, query string, args ...any) *StupidQL {
-	clone := d.copy()
+func (d *StupidQL) Mark(name string, query string, args ...any) (clone *StupidQL) {
+	clone = d.copy()
 	if clone.err != nil {
-		return clone
+		return
 	}
 
 	defer func() {
@@ -131,7 +132,7 @@ func (d *StupidQL) Mark(name string, query string, args ...any) *StupidQL {
 		clone.queries = append(clone.queries, parsedQuery)
 		clone.args = append(clone.args, parsedArgs)
 	}
-	return clone
+	return
 }
 
 // build 是连接 sqlx 的核心桥梁
@@ -207,6 +208,104 @@ func (d *StupidQL) ToSQL() (string, []any, error) {
 // Error 返回 builder 累积的错误
 func (d *StupidQL) Error() error {
 	return d.err
+}
+
+// Insert 生成并追加 INSERT INTO 语句
+// data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
+func (d *StupidQL) Insert(table string, data any) *StupidQL {
+	cols, vals, err := extractColsVals(data)
+	if err != nil {
+		clone := d.copy()
+		clone.err = fmt.Errorf("insert: %w", err)
+		return clone
+	}
+	quotedCols := make([]string, len(cols))
+	placeholders := make([]string, len(cols))
+	for i, c := range cols {
+		quotedCols[i] = d.quoter(c)
+		placeholders[i] = "?"
+	}
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+		d.quoter(table),
+		strings.Join(quotedCols, ", "),
+		strings.Join(placeholders, ", "),
+	)
+	return d.Add(query, vals...)
+}
+
+// Update 生成并追加 UPDATE ... SET 语句
+// data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
+func (d *StupidQL) Update(table string, data any, where string, args ...any) *StupidQL {
+	cols, vals, err := extractColsVals(data)
+	if err != nil {
+		clone := d.copy()
+		clone.err = fmt.Errorf("update: %w", err)
+		return clone
+	}
+	setClauses := make([]string, len(cols))
+	for i, c := range cols {
+		setClauses[i] = d.quoter(c) + "=?"
+	}
+	query := fmt.Sprintf("UPDATE %s SET %s",
+		d.quoter(table),
+		strings.Join(setClauses, ", "),
+	)
+	return d.Add(query, vals...).Add(where, args...)
+}
+
+// Delete 生成并执行 DELETE FROM 语句
+func (d *StupidQL) Delete(table string, where string, args ...any) *StupidQL {
+	return d.Add(fmt.Sprintf("DELETE FROM %s", d.quoter(table))).Add(where, args...)
+}
+
+// extractColsVals 从 struct 或 map 中提取列名和对应值
+func extractColsVals(data any) ([]string, []any, error) {
+	if m, ok := data.(map[string]any); ok {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		vals := make([]any, len(keys))
+		for i, k := range keys {
+			vals[i] = m[k]
+		}
+		return keys, vals, nil
+	}
+
+	rv := reflect.ValueOf(data)
+	for rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return nil, nil, errors.New("data must be a struct or map[string]any")
+	}
+
+	rt := rv.Type()
+	var cols []string
+	var vals []any
+	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+
+		if !field.IsExported() {
+			continue
+		}
+
+		tag := field.Tag.Get("db")
+		if tag == "-" {
+			continue
+		}
+		col := tag
+		if col == "" {
+			col = field.Name
+		}
+		cols = append(cols, col)
+		vals = append(vals, rv.Field(i).Interface())
+	}
+	if len(cols) == 0 {
+		return nil, nil, errors.New("no columns found")
+	}
+	return cols, vals, nil
 }
 
 // ==========================================
@@ -307,7 +406,7 @@ func (d *StupidQL) parseText(tpl string, args ...any) (string, []any) {
 			return fmt.Sprintf("%v", arg)
 		case "@": // 标识符转义 (安全表名/列名)
 			return d.quoter(fmt.Sprintf("%v", arg))
-		case "#", "": // 安全的参数绑定
+		case "#": // 安全的参数绑定
 			sqlParams = append(sqlParams, arg)
 			return "?" // 统一替换为 ?, 后续交由 sqlx.Rebind 处理方言
 		}
@@ -333,8 +432,12 @@ func toMap(model any) map[string]any {
 	result := make(map[string]any)
 	rt := rv.Type()
 	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+		if !field.IsExported() {
+			continue
+		}
 		// 这里可以根据需求扩展读取 db tag
-		result[rt.Field(i).Name] = rv.Field(i).Interface()
+		result[field.Name] = rv.Field(i).Interface()
 	}
 	return result
 }
