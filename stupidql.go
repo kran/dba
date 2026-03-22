@@ -15,6 +15,11 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+const (
+	FIELD  = "FIELD*"
+	IGNORE = "IGNORE*"
+)
+
 var (
 	formatPhPattern = regexp.MustCompile(`([#@!])\{([^}]+?)\}`)
 	intPattern      = regexp.MustCompile(`^\d+$`)
@@ -167,8 +172,8 @@ func (d *StupidQL) build() (string, []any, error) {
 // 委托给 sqlx 执行的终端方法
 // ==========================================
 
-// Select 映射多行到 Slice
-func (d *StupidQL) Select(dest interface{}) error {
+// List 映射多行到 Slice
+func (d *StupidQL) List(dest interface{}) error {
 	query, args, err := d.build()
 	if err != nil {
 		return err
@@ -213,6 +218,12 @@ func (d *StupidQL) Error() error {
 	return d.err
 }
 
+func (d *StupidQL) Select(table string, where string, args ...any) *StupidQL {
+	return d.Add("SELECT").
+		Mark(FIELD, "*").
+		Add("FROM "+d.quoter(table)+" WHERE "+where, args)
+}
+
 // Insert 生成并追加 INSERT INTO 语句
 // data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
 func (d *StupidQL) Insert(table string, data any) *StupidQL {
@@ -228,12 +239,12 @@ func (d *StupidQL) Insert(table string, data any) *StupidQL {
 		quotedCols[i] = d.quoter(c)
 		placeholders[i] = "?"
 	}
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+	query := fmt.Sprintf("INTO %s (%s) VALUES (%s)",
 		d.quoter(table),
 		strings.Join(quotedCols, ", "),
 		strings.Join(placeholders, ", "),
 	)
-	return d.Add(query, vals...)
+	return d.Add("INSERT").Mark(IGNORE, "").Add(query, vals...)
 }
 
 // Update 生成并追加 UPDATE ... SET 语句
@@ -386,24 +397,18 @@ func toMap(model any) map[string]any {
 		panic("named args source must be a struct or map[string]any")
 	}
 
-	// 1. [魔法时刻] 直接从 sqlx 的全局缓存里拿解析好的结构体元数据
-	// 这一步是 O(1) 复杂度的，性能极高！
 	structMap := mapper.TypeMap(rv.Type())
 
 	result := make(map[string]any, len(structMap.Index))
 
-	// 2. 遍历 sqlx 帮我们整理好的有效字段
 	for _, fi := range structMap.Index {
-		// sqlx 已经帮我们过滤了私有字段！
 		// fi.Name 就是解析好的 `db` tag (或者默认的小写字段名)
 		if fi.Name == "-" || fi.Name == "" {
 			continue
 		}
 
-		// [魔法时刻] FieldByIndexesReadOnly 完美支持了“匿名嵌套结构体”的深度抓取！
 		val := reflectx.FieldByIndexesReadOnly(rv, fi.Index)
 		if _, hasOmitempty := fi.Options["omitempty"]; hasOmitempty {
-			// Go 原生的 IsZero 会极其严谨地判断 0, "", false, nil 等零值
 			if val.IsZero() {
 				continue // 如果带有 omitempty 且当前是零值，立刻剔除！
 			}
