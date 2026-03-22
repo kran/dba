@@ -67,7 +67,7 @@ func TestAdd_NamedMacro_Struct(t *testing.T) {
 		Age  int
 	}
 	q, _ := newQ(t)
-	sql, args, err := q.Add("WHERE name = #{Name} AND age > #{Age}", Filter{"bob", 20}).ToSQL()
+	sql, args, err := q.Add("WHERE name = #{name} AND age > #{age}", Filter{"bob", 20}).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}

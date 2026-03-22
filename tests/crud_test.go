@@ -9,6 +9,12 @@ type testUser struct {
 	Name string `db:"name"`
 }
 
+type autoUser struct {
+	ID   int    `db:"id,omitempty"` // 自增主键，零值时排除
+	Name string `db:"name"`
+	Age  int    `db:"age,omitempty"` // 可选字段
+}
+
 func TestInsert_Struct(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Insert("users", testUser{ID: 1, Name: "alice"}).ToSQL()
@@ -68,7 +74,7 @@ func TestInsert_NoTagFallsBackToFieldName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT INTO "t" ("Name") VALUES (?)`
+	want := `INSERT INTO "t" ("name") VALUES (?)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -116,6 +122,63 @@ func TestDelete(t *testing.T) {
 	}
 	if len(args) != 1 || args[0] != 99 {
 		t.Errorf("args: %v", args)
+	}
+}
+
+// omitempty: 零值字段被过滤，用于自增主键 INSERT 场景
+func TestInsert_Omitempty_ZeroID(t *testing.T) {
+	q, _ := newQ(t)
+	// ID=0 应被过滤，Age=0 也应被过滤
+	sql, args, err := q.Insert("users", autoUser{Name: "alice"}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT INTO "users" ("name") VALUES (?)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 1 || args[0] != "alice" {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_Omitempty_NonZeroID(t *testing.T) {
+	q, _ := newQ(t)
+	// ID 非零时保留
+	sql, args, err := q.Insert("users", autoUser{ID: 5, Name: "bob", Age: 18}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT INTO "users" ("age", "id", "name") VALUES (?, ?, ?)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 3 {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_Omitempty_Exec(t *testing.T) {
+	q, db := newQ(t)
+	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER)")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ID=0 被过滤，让数据库自动生成主键
+	_, err = q.Insert("users", autoUser{Name: "alice", Age: 20}).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var id int
+	var name string
+	db.QueryRow("SELECT id, name FROM users LIMIT 1").Scan(&id, &name)
+	if id == 0 {
+		t.Error("expected auto-generated id, got 0")
+	}
+	if name != "alice" {
+		t.Errorf("got name %q", name)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/jmoiron/sqlx/reflectx"
 	"reflect"
 	"regexp"
 	"sort"
@@ -18,6 +19,8 @@ var (
 	formatPhPattern = regexp.MustCompile(`([#@!])\{([^}]+?)\}`)
 	intPattern      = regexp.MustCompile(`^\d+$`)
 )
+
+var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
 
 // Quoter 用于 @{} 宏的标识符安全转义 (比如把 user 转为 `user` 或 "user")
 type Quoter func(string) string
@@ -258,56 +261,6 @@ func (d *StupidQL) Delete(table string, where string, args ...any) *StupidQL {
 	return d.Add(fmt.Sprintf("DELETE FROM %s", d.quoter(table))).Add(where, args...)
 }
 
-// extractColsVals 从 struct 或 map 中提取列名和对应值
-func extractColsVals(data any) ([]string, []any, error) {
-	if m, ok := data.(map[string]any); ok {
-		keys := make([]string, 0, len(m))
-		for k := range m {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		vals := make([]any, len(keys))
-		for i, k := range keys {
-			vals[i] = m[k]
-		}
-		return keys, vals, nil
-	}
-
-	rv := reflect.ValueOf(data)
-	for rv.Kind() == reflect.Ptr {
-		rv = rv.Elem()
-	}
-	if rv.Kind() != reflect.Struct {
-		return nil, nil, errors.New("data must be a struct or map[string]any")
-	}
-
-	rt := rv.Type()
-	var cols []string
-	var vals []any
-	for i := 0; i < rt.NumField(); i++ {
-		field := rt.Field(i)
-
-		if !field.IsExported() {
-			continue
-		}
-
-		tag := field.Tag.Get("db")
-		if tag == "-" {
-			continue
-		}
-		col := tag
-		if col == "" {
-			col = field.Name
-		}
-		cols = append(cols, col)
-		vals = append(vals, rv.Field(i).Interface())
-	}
-	if len(cols) == 0 {
-		return nil, nil, errors.New("no columns found")
-	}
-	return cols, vals, nil
-}
-
 // ==========================================
 // 事务支持
 // ==========================================
@@ -421,23 +374,85 @@ func toMap(model any) map[string]any {
 	if m, ok := model.(map[string]any); ok {
 		return m
 	}
+
 	rv := reflect.ValueOf(model)
-	if rv.Kind() == reflect.Ptr {
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return make(map[string]any) // 空指针直接返回空 map
+		}
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
 		panic("named args source must be a struct or map[string]any")
 	}
 
-	result := make(map[string]any)
-	rt := rv.Type()
-	for i := 0; i < rt.NumField(); i++ {
-		field := rt.Field(i)
-		if !field.IsExported() {
+	// 1. [魔法时刻] 直接从 sqlx 的全局缓存里拿解析好的结构体元数据
+	// 这一步是 O(1) 复杂度的，性能极高！
+	structMap := mapper.TypeMap(rv.Type())
+
+	result := make(map[string]any, len(structMap.Index))
+
+	// 2. 遍历 sqlx 帮我们整理好的有效字段
+	for _, fi := range structMap.Index {
+		// sqlx 已经帮我们过滤了私有字段！
+		// fi.Name 就是解析好的 `db` tag (或者默认的小写字段名)
+		if fi.Name == "-" || fi.Name == "" {
 			continue
 		}
-		// 这里可以根据需求扩展读取 db tag
-		result[field.Name] = rv.Field(i).Interface()
+
+		// [魔法时刻] FieldByIndexesReadOnly 完美支持了“匿名嵌套结构体”的深度抓取！
+		val := reflectx.FieldByIndexesReadOnly(rv, fi.Index)
+		if _, hasOmitempty := fi.Options["omitempty"]; hasOmitempty {
+			// Go 原生的 IsZero 会极其严谨地判断 0, "", false, nil 等零值
+			if val.IsZero() {
+				continue // 如果带有 omitempty 且当前是零值，立刻剔除！
+			}
+		}
+
+		result[fi.Name] = val.Interface()
 	}
+
 	return result
+}
+
+// extractColsVals 从 struct 或 map 中提取列名和对应值
+func extractColsVals(data any) (cols []string, vals []any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("extract data failed: %v", r)
+		}
+	}()
+
+	if m, ok := data.(map[string]any); ok {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		vals := make([]any, len(keys))
+		for i, k := range keys {
+			vals[i] = m[k]
+		}
+		return keys, vals, nil
+	}
+
+	// 直接调用我们上面写好的“完美版 toMap”
+	m := toMap(data)
+	if len(m) == 0 {
+		return nil, nil, errors.New("no columns found or data must be a struct/map")
+	}
+
+	// 排序保证生成的 SQL 字符串绝对稳定，利于 DB 预编译缓存
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	vals = make([]any, len(keys))
+	for i, k := range keys {
+		vals[i] = m[k]
+	}
+
+	return keys, vals, nil
 }
