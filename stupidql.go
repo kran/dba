@@ -20,6 +20,8 @@ const (
 	IGNORE = "IGNORE*"
 )
 
+type H = map[string]any
+
 var (
 	formatPhPattern = regexp.MustCompile(`([#@!])\{([^}]+?)\}`)
 	intPattern      = regexp.MustCompile(`^\d+$`)
@@ -398,7 +400,6 @@ func toMap(model any) map[string]any {
 	}
 
 	structMap := mapper.TypeMap(rv.Type())
-
 	result := make(map[string]any, len(structMap.Index))
 
 	for _, fi := range structMap.Index {
@@ -428,20 +429,6 @@ func extractColsVals(data any) (cols []string, vals []any, err error) {
 		}
 	}()
 
-	if m, ok := data.(map[string]any); ok {
-		keys := make([]string, 0, len(m))
-		for k := range m {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		vals := make([]any, len(keys))
-		for i, k := range keys {
-			vals[i] = m[k]
-		}
-		return keys, vals, nil
-	}
-
-	// 直接调用我们上面写好的“完美版 toMap”
 	m := toMap(data)
 	if len(m) == 0 {
 		return nil, nil, errors.New("no columns found or data must be a struct/map")
