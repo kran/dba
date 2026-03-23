@@ -92,6 +92,21 @@ func (d *StupidQL) WithContext(ctx context.Context) *StupidQL {
 	return clone
 }
 
+// Unsafe 返回一个忽略未映射列的 StupidQL（不报 "missing destination" 错误）
+func (d *StupidQL) Unsafe() *StupidQL {
+	clone := d.copy()
+	switch v := d.db.(type) {
+	case *sqlx.DB:
+		clone.db = v.Unsafe()
+		if d.rawDB != nil {
+			clone.rawDB = d.rawDB.Unsafe()
+		}
+	case *sqlx.Tx:
+		clone.db = v.Unsafe()
+	}
+	return clone
+}
+
 // Add 核心方法：添加 SQL 片段并解析宏
 func (d *StupidQL) Add(query string, args ...any) (clone *StupidQL) {
 	clone = d.copy()
@@ -175,8 +190,23 @@ func (d *StupidQL) build() (string, []any, error) {
 // 委托给 sqlx 执行的终端方法
 // ==========================================
 
-// List 映射多行到 Slice
+// List 映射多行到 Slice，dest 可以是 *[]SomeStruct 或 *[]map[string]any
 func (d *StupidQL) List(dest interface{}) error {
+	if mapSlice, ok := dest.(*[]map[string]any); ok {
+		rows, err := d.Rows()
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			m := make(map[string]any)
+			if err := rows.MapScan(m); err != nil {
+				return err
+			}
+			*mapSlice = append(*mapSlice, m)
+		}
+		return rows.Err()
+	}
 	query, args, err := d.build()
 	if err != nil {
 		return err
@@ -184,8 +214,22 @@ func (d *StupidQL) List(dest interface{}) error {
 	return sqlx.SelectContext(d.ctx, d.db, dest, query, args...)
 }
 
-// Get 映射单行到 Struct
+// Get 映射单行到 Struct，dest 可以是 *SomeStruct 或 *map[string]any
 func (d *StupidQL) Get(dest interface{}) error {
+	if m, ok := dest.(*map[string]any); ok {
+		rows, err := d.Rows()
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			return sql.ErrNoRows
+		}
+		return rows.MapScan(*m)
+	}
 	query, args, err := d.build()
 	if err != nil {
 		return err
@@ -312,8 +356,12 @@ func (d *StupidQL) Rollback() error {
 	return tx.Rollback()
 }
 
-// Transaction 闭包事务：fn 返回 error 或发生 panic 时自动回滚
+// Transaction 闭包事务：fn 返回 error 或发生 panic 时自动回滚。
+// 若当前已在事务中，直接执行 fn（join 外层事务），不开新事务。
 func (d *StupidQL) Transaction(fn func(*StupidQL) error) error {
+	if d.rawDB == nil {
+		return fn(d)
+	}
 	txDuck, err := d.Begin()
 	if err != nil {
 		return err
