@@ -3,9 +3,9 @@ package stupidql_test
 import (
 	"testing"
 
+	"codeberg.org/kran/stupidql"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
-	"stupidql"
 )
 
 func newDB(t *testing.T) *sqlx.DB {

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"stupidql"
+	"codeberg.org/kran/stupidql"
 )
 
 func setupItemsTable(t *testing.T, q *stupidql.StupidQL) {
