@@ -1,6 +1,7 @@
 package stupidql_test
 
 import (
+	"codeberg.org/kran/stupidql"
 	"testing"
 )
 
@@ -191,6 +192,123 @@ func TestInsert_Omitempty_Exec(t *testing.T) {
 	}
 	if name != "alice" {
 		t.Errorf("got name %q", name)
+	}
+}
+
+// Expr: 原始 SQL 表达式
+func TestUpdate_Expr_NoArgs(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Update("users", map[string]any{
+		"version": stupidql.NewExpr("version+1"),
+		"name":    "alice",
+	}, "WHERE id = #{1}", 1).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// map 排序: name, version
+	want := "UPDATE \"users\" SET \"name\"=?, \"version\"=version+1\nWHERE id = ?"
+	if sql != want {
+		t.Errorf("sql:\n got  %q\n want %q", sql, want)
+	}
+	// version+1 没有绑定参数，只有 name 和 WHERE id
+	if len(args) != 2 || args[0] != "alice" || args[1] != 1 {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestUpdate_Expr_WithMacro(t *testing.T) {
+	q, _ := newQ(t)
+	// Expr 内使用 #{} 宏而不是原始 ?
+	sql, args, err := q.Update("users", map[string]any{
+		"score": stupidql.NewExpr("score+#{1}+#{2}", 10, 11),
+		"name":  "bob",
+	}, "WHERE id = #{1}", 2).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "UPDATE \"users\" SET \"name\"=?, \"score\"=score+?+?\nWHERE id = ?"
+	if sql != want {
+		t.Errorf("sql:\n got  %q\n want %q", sql, want)
+	}
+	if len(args) != 4 || args[0] != "bob" || args[1] != 10 || args[2] != 11 || args[3] != 2 {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestUpdate_Expr_MultiAdd(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Update("users", map[string]any{
+		"score": stupidql.NewExpr("score+#{1}+#{2}", 10, 11),
+		"age":   stupidql.NewExpr("age+#{1}", 1),
+		"name":  "bob",
+	}, "WHERE id = #{1}", 2).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "UPDATE \"users\" SET \"age\"=age+?, \"name\"=?, \"score\"=score+?+?\nWHERE id = ?"
+	if sql != want {
+		t.Errorf("sql:\n got  %q\n want %q", sql, want)
+	}
+	if len(args) != 5 || args[0] != 1 || args[1] != "bob" || args[2] != 10 || args[3] != 11 || args[4] != 2 {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestUpdate_Expr_IdentifierMacro(t *testing.T) {
+	q, _ := newQ(t)
+	// Expr 内也能用 @{} 标识符转义
+	sql, args, err := q.Update("stats", map[string]any{
+		"total": stupidql.NewExpr("@{1}+#{2}", "count", 1),
+	}, "WHERE id = #{1}", 5).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "UPDATE \"stats\" SET \"total\"=\"count\"+?\nWHERE id = ?"
+	if sql != want {
+		t.Errorf("sql:\n got  %q\n want %q", sql, want)
+	}
+	if len(args) != 2 || args[0] != 1 || args[1] != 5 {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_Expr(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("logs", map[string]any{
+		"created_at": stupidql.NewExpr("NOW()"),
+		"msg":        "hello",
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "INSERT\n\nINTO \"logs\" (\"created_at\", \"msg\") VALUES (NOW(), ?)"
+	if sql != want {
+		t.Errorf("sql:\n got  %q\n want %q", sql, want)
+	}
+	if len(args) != 1 || args[0] != "hello" {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestUpdate_Expr_Exec(t *testing.T) {
+	q, db := newQ(t)
+	_, err := db.Exec("CREATE TABLE counters (id INTEGER PRIMARY KEY, val INTEGER)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Exec("INSERT INTO counters VALUES (1, 10)")
+
+	_, err = q.Update("counters", map[string]any{
+		"val": stupidql.NewExpr("val+?", 5),
+	}, "WHERE id = #{1}", 1).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var val int
+	db.QueryRow("SELECT val FROM counters WHERE id = 1").Scan(&val)
+	if val != 15 {
+		t.Errorf("expected 15, got %d", val)
 	}
 }
 

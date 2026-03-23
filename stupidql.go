@@ -22,6 +22,12 @@ const (
 
 type H = map[string]any
 
+// Expr 表示一个原始 SQL 表达式，用于 Insert/Update 中需要非绑定值的场景
+type Expr struct {
+	SQL  string
+	Args []any
+}
+
 var (
 	formatPhPattern = regexp.MustCompile(`([#@!])\{([^}]+?)}`)
 	intPattern      = regexp.MustCompile(`^\d+$`)
@@ -63,6 +69,10 @@ func NewStupidQL(db *sqlx.DB) *StupidQL {
 		ctx:     context.Background(),
 		quoter:  quoter,
 	}
+}
+
+func NewExpr(sql string, args ...any) Expr {
+	return Expr{SQL: sql, Args: args}
 }
 
 // copy 实现不可变模式 (Immutable)
@@ -298,6 +308,7 @@ func (d *StupidQL) Select(table string, where string, args ...any) *StupidQL {
 
 // Insert 生成并追加 INSERT INTO 语句
 // data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
+// 值为 Expr 类型时使用原始 SQL 表达式替代绑定参数
 func (d *StupidQL) Insert(table string, data any) *StupidQL {
 	cols, vals, err := extractColsVals(data)
 	if err != nil {
@@ -307,20 +318,29 @@ func (d *StupidQL) Insert(table string, data any) *StupidQL {
 	}
 	quotedCols := make([]string, len(cols))
 	placeholders := make([]string, len(cols))
+	var bindArgs []any
 	for i, c := range cols {
 		quotedCols[i] = d.quoter(c)
-		placeholders[i] = "?"
+		if expr, ok := vals[i].(Expr); ok {
+			parsedSQL, parsedArgs := d.parseText(expr.SQL, expr.Args...)
+			placeholders[i] = parsedSQL
+			bindArgs = append(bindArgs, parsedArgs...)
+		} else {
+			placeholders[i] = "?"
+			bindArgs = append(bindArgs, vals[i])
+		}
 	}
 	query := fmt.Sprintf("INTO %s (%s) VALUES (%s)",
 		d.quoter(table),
 		strings.Join(quotedCols, ", "),
 		strings.Join(placeholders, ", "),
 	)
-	return d.Add("INSERT").Mark(IGNORE, "").Add(query, vals...)
+	return d.Add("INSERT").Mark(IGNORE, "").Add(query, bindArgs...)
 }
 
 // Update 生成并追加 UPDATE ... SET 语句
 // data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
+// 值为 Expr 类型时使用原始 SQL 表达式替代绑定参数
 func (d *StupidQL) Update(table string, data any, where string, args ...any) *StupidQL {
 	cols, vals, err := extractColsVals(data)
 	if err != nil {
@@ -329,14 +349,22 @@ func (d *StupidQL) Update(table string, data any, where string, args ...any) *St
 		return clone
 	}
 	setClauses := make([]string, len(cols))
+	var bindArgs []any
 	for i, c := range cols {
-		setClauses[i] = d.quoter(c) + "=?"
+		if expr, ok := vals[i].(Expr); ok {
+			parsedSQL, parsedArgs := d.parseText(expr.SQL, expr.Args...)
+			setClauses[i] = d.quoter(c) + "=" + parsedSQL
+			bindArgs = append(bindArgs, parsedArgs...)
+		} else {
+			setClauses[i] = d.quoter(c) + "=?"
+			bindArgs = append(bindArgs, vals[i])
+		}
 	}
 	query := fmt.Sprintf("UPDATE %s SET %s",
 		d.quoter(table),
 		strings.Join(setClauses, ", "),
 	)
-	return d.Add(query, vals...).Add(where, args...)
+	return d.Add(query, bindArgs...).Add(where, args...)
 }
 
 // Delete 生成并执行 DELETE FROM 语句
