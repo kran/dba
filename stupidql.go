@@ -23,7 +23,7 @@ const (
 type H = map[string]any
 
 var (
-	formatPhPattern = regexp.MustCompile(`([#@!])\{([^}]+?)\}`)
+	formatPhPattern = regexp.MustCompile(`([#@!])\{([^}]+?)}`)
 	intPattern      = regexp.MustCompile(`^\d+$`)
 )
 
@@ -173,7 +173,7 @@ func (d *StupidQL) build() (string, []any, error) {
 		flatArgs = append(flatArgs, args...)
 	}
 
-	qmark := "_(_stupidql~qmark_)_"
+	qmark := "\x00stupidql-qmark\x00"
 	query = strings.ReplaceAll(query, "??", qmark)
 	query, flatArgs, err := sqlx.In(query, flatArgs...)
 	if err != nil {
@@ -189,6 +189,31 @@ func (d *StupidQL) build() (string, []any, error) {
 // ==========================================
 // 委托给 sqlx 执行的终端方法
 // ==========================================
+
+// Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT
+func (d *StupidQL) Batch(rows [][]any) *StupidQL {
+	if len(rows) == 0 {
+		clone := d.copy()
+		clone.err = errors.New("batch: empty rows")
+		return clone
+	}
+	width := len(rows[0])
+	if width == 0 {
+		clone := d.copy()
+		clone.err = errors.New("batch: empty row")
+		return clone
+	}
+	placeholder := "(" + strings.Repeat("?,", width-1) + "?)"
+	placeholders := make([]string, len(rows))
+	for i := range rows {
+		placeholders[i] = placeholder
+	}
+	var args []any
+	for _, row := range rows {
+		args = append(args, row...)
+	}
+	return d.Add("VALUES "+strings.Join(placeholders, ", "), args...)
+}
 
 // List 映射多行到 Slice，dest 可以是 *[]SomeStruct 或 *[]map[string]any
 func (d *StupidQL) List(dest interface{}) error {
@@ -374,9 +399,43 @@ func (d *StupidQL) Transaction(fn func(*StupidQL) error) error {
 	return txDuck.Commit()
 }
 
-// ==========================================
-// 宏解析引擎 (保留你最核心的资产)
-// ==========================================
+// IsOk 检查传入的值是否为 "ok" (非 nil, 非空白字符串, 非空集合/数组/字典)
+func IsOk(v any) bool {
+	if v == nil {
+		return false
+	}
+
+	// 常用类型的快速路径 (Type Switch) - 提升性能，避免反射开销
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val) != ""
+	}
+
+	// 借助反射处理动态类型 (Slice, Array, Map, 指针, 自定义别名等)
+	rv := reflect.ValueOf(v)
+
+	// 解引用：处理指针和接口的嵌套情况
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+
+	// 根据具体的底层数据结构（Kind）进行判断
+	switch rv.Kind() {
+	case reflect.String:
+		// 处理类似 `type MyString string` 这种自定义别名类型
+		return strings.TrimSpace(rv.String()) != ""
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return rv.Len() > 0
+	case reflect.Invalid:
+		// 防御性兜底，通常在 v 是彻底的 nil 时会走到这里
+		return false
+	default:
+		return true
+	}
+}
 
 func (d *StupidQL) parseText(tpl string, args ...any) (string, []any) {
 	if !strings.Contains(tpl, "{") {
