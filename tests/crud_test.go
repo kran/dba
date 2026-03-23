@@ -21,7 +21,9 @@ func TestInsert_Struct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT INTO "users" ("id", "name") VALUES (?, ?)`
+	want := `INSERT
+
+INTO "users" ("id", "name") VALUES (?, ?)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -37,7 +39,9 @@ func TestInsert_Map(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT INTO "users" ("age", "name") VALUES (?, ?)`
+	want := `INSERT
+
+INTO "users" ("age", "name") VALUES (?, ?)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -56,7 +60,9 @@ func TestInsert_SkipDashTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT INTO "t" ("name") VALUES (?)`
+	want := `INSERT
+
+INTO "t" ("name") VALUES (?)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -74,7 +80,9 @@ func TestInsert_NoTagFallsBackToFieldName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT INTO "t" ("name") VALUES (?)`
+	want := `INSERT
+
+INTO "t" ("name") VALUES (?)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -133,7 +141,9 @@ func TestInsert_Omitempty_ZeroID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT INTO "users" ("name") VALUES (?)`
+	want := `INSERT
+
+INTO "users" ("name") VALUES (?)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -149,7 +159,9 @@ func TestInsert_Omitempty_NonZeroID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT INTO "users" ("age", "id", "name") VALUES (?, ?, ?)`
+	want := `INSERT
+
+INTO "users" ("age", "id", "name") VALUES (?, ?, ?)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -216,7 +228,9 @@ func TestInsert_SliceExpanded(t *testing.T) {
 		t.Fatal(err)
 	}
 	// tags 切片被展开，VALUES 从 2 个 ? 变成 3 个
-	wantSQL := `INSERT INTO "users" ("name", "tags") VALUES (?, ?, ?)`
+	wantSQL := `INSERT
+
+INTO "users" ("name", "tags") VALUES (?, ?, ?)`
 	if sql != wantSQL {
 		t.Errorf("sql:\n got  %q\n want %q", sql, wantSQL)
 	}

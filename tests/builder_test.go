@@ -192,6 +192,53 @@ func TestImmutability(t *testing.T) {
 	}
 }
 
+// ?? 转义：写字面量 ? 而不被 sqlx.In/Rebind 当作参数占位符处理
+// 典型场景：PostgreSQL JSONB 运算符 (data ?? 'key')
+func TestBuild_DoubleQuestionMark_Preserved(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Add("WHERE data ?? 'key'").ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "WHERE data ? 'key'" {
+		t.Errorf("got %q", sql)
+	}
+	if len(args) != 0 {
+		t.Errorf("expected no args, got %v", args)
+	}
+}
+
+func TestBuild_DoubleQuestionMark_WithParams(t *testing.T) {
+	q, _ := newQ(t)
+	// ?? 是字面量 ?，#{1} 是绑定参数，两者共存
+	sql, args, err := q.Add("WHERE data ??| #{1} AND id = #{2}", "key", 42).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "WHERE data ?| ? AND id = ?" {
+		t.Errorf("got %q", sql)
+	}
+	if len(args) != 2 || args[0] != "key" || args[1] != 42 {
+		t.Errorf("expected [key 42], got %v", args)
+	}
+}
+
+func TestBuild_DoubleQuestionMark_NotExpandedByIn(t *testing.T) {
+	q, _ := newQ(t)
+	ids := []int{1, 2, 3}
+	// ?? 不应被 sqlx.In 展开，IN 里的切片才展开
+	sql, args, err := q.Add("WHERE data ?? 'k' AND id IN (#{1})", ids).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "WHERE data ? 'k' AND id IN (?, ?, ?)" {
+		t.Errorf("got %q", sql)
+	}
+	if len(args) != 3 {
+		t.Errorf("expected 3 args, got %v", args)
+	}
+}
+
 func TestError_MissingPositionalArg(t *testing.T) {
 	q, _ := newQ(t)
 	result := q.Add("WHERE id = #{1}") // no args

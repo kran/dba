@@ -158,14 +158,15 @@ func (d *StupidQL) build() (string, []any, error) {
 		flatArgs = append(flatArgs, args...)
 	}
 
-	// 2. [魔法时刻] 交给 sqlx 处理切片展开 (解决 WHERE id IN (?) 的痛点)
+	qmark := "_(_stupidql~qmark_)_"
+	query = strings.ReplaceAll(query, "??", qmark)
 	query, flatArgs, err := sqlx.In(query, flatArgs...)
 	if err != nil {
 		return "", nil, fmt.Errorf("sqlx.In expand failed: %w", err)
 	}
 
-	// 3. [魔法时刻] 交给 sqlx 处理方言占位符 (自动把 ? 转为 $1, $2 或者保留 ?)
 	query = d.db.Rebind(query)
+	query = strings.ReplaceAll(query, qmark, "?")
 
 	return query, flatArgs, nil
 }
