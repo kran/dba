@@ -22,6 +22,10 @@ const (
 
 type H = map[string]any
 
+// Middleware 中间件类型，洋葱模型
+type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
+type Middleware func(next ExecFunc) ExecFunc
+
 // Expr 表示一个原始 SQL 表达式，用于 Insert/Update 中需要非绑定值的场景
 type Expr struct {
 	SQL  string
@@ -47,11 +51,12 @@ type StupidQL struct {
 	args    [][]any
 	marks   map[string]int
 
-	db     sqlx.ExtContext // sqlx 的核心接口，兼容 *sqlx.DB 和 *sqlx.Tx
-	rawDB  *sqlx.DB        // 仅用于开启事务，进入事务后为 nil
-	ctx    context.Context
-	err    error
-	quoter Quoter
+	db          sqlx.ExtContext // sqlx 的核心接口，兼容 *sqlx.DB 和 *sqlx.Tx
+	rawDB       *sqlx.DB        // 仅用于开启事务，进入事务后为 nil
+	ctx         context.Context
+	err         error
+	quoter      Quoter
+	middlewares []Middleware
 }
 
 // NewStupidQL 包装现有的 sqlx.DB
@@ -61,18 +66,25 @@ func NewStupidQL(db *sqlx.DB) *StupidQL {
 		quoter = MySQLQuoter
 	}
 	return &StupidQL{
-		queries: make([]string, 0),
-		args:    make([][]any, 0),
-		marks:   make(map[string]int),
-		db:      db,
-		rawDB:   db,
-		ctx:     context.Background(),
-		quoter:  quoter,
+		queries:     make([]string, 0),
+		args:        make([][]any, 0),
+		marks:       make(map[string]int),
+		db:          db,
+		rawDB:       db,
+		ctx:         context.Background(),
+		quoter:      quoter,
 	}
 }
 
 func NewExpr(sql string, args ...any) Expr {
 	return Expr{SQL: sql, Args: args}
+}
+
+// Scalar 泛型函数，获取单个标量值（如 COUNT、MAX、单列查询等）
+func Scalar[T any](d *StupidQL) (T, error) {
+	var v T
+	err := d.Get(&v)
+	return v, err
 }
 
 // copy 实现不可变模式 (Immutable)
@@ -91,6 +103,10 @@ func (d *StupidQL) copy() *StupidQL {
 	copy(clone.args, d.args)
 	for k, v := range d.marks {
 		clone.marks[k] = v
+	}
+	if len(d.middlewares) > 0 {
+		clone.middlewares = make([]Middleware, len(d.middlewares))
+		copy(clone.middlewares, d.middlewares)
 	}
 	return clone
 }
@@ -115,6 +131,26 @@ func (d *StupidQL) Unsafe() *StupidQL {
 		clone.db = v.Unsafe()
 	}
 	return clone
+}
+
+// Use 添加中间件，返回新实例
+func (d *StupidQL) Use(mw ...Middleware) *StupidQL {
+	clone := d.copy()
+	clone.middlewares = append(clone.middlewares, mw...)
+	return clone
+}
+
+// execute 构建 SQL 并通过中间件链执行
+func (d *StupidQL) execute(fn ExecFunc) (any, error) {
+	query, args, err := d.build()
+	if err != nil {
+		return nil, err
+	}
+	exec := fn
+	for i := len(d.middlewares) - 1; i >= 0; i-- {
+		exec = d.middlewares[i](exec)
+	}
+	return exec(d.ctx, query, args)
 }
 
 // Add 核心方法：添加 SQL 片段并解析宏
@@ -242,11 +278,10 @@ func (d *StupidQL) List(dest interface{}) error {
 		}
 		return rows.Err()
 	}
-	query, args, err := d.build()
-	if err != nil {
-		return err
-	}
-	return sqlx.SelectContext(d.ctx, d.db, dest, query, args...)
+	_, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
+		return nil, sqlx.SelectContext(ctx, d.db, dest, query, args...)
+	})
+	return err
 }
 
 // Get 映射单行到 Struct，dest 可以是 *SomeStruct 或 *map[string]any
@@ -265,29 +300,32 @@ func (d *StupidQL) Get(dest interface{}) error {
 		}
 		return rows.MapScan(*m)
 	}
-	query, args, err := d.build()
-	if err != nil {
-		return err
-	}
-	return sqlx.GetContext(d.ctx, d.db, dest, query, args...)
+	_, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
+		return nil, sqlx.GetContext(ctx, d.db, dest, query, args...)
+	})
+	return err
 }
 
 // Exec 执行非查询 SQL
 func (d *StupidQL) Exec() (sql.Result, error) {
-	query, args, err := d.build()
+	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
+		return d.db.ExecContext(ctx, query, args...)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return d.db.ExecContext(d.ctx, query, args...)
+	return result.(sql.Result), nil
 }
 
 // Rows 返回原始 *sqlx.Rows，用于流式处理大结果集
 func (d *StupidQL) Rows() (*sqlx.Rows, error) {
-	query, args, err := d.build()
+	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
+		return d.db.QueryxContext(ctx, query, args...)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return d.db.QueryxContext(d.ctx, query, args...)
+	return result.(*sqlx.Rows), nil
 }
 
 // ToSQL 返回最终 SQL 和参数，不执行，用于调试和日志
@@ -525,7 +563,7 @@ func toMap(model any) map[string]any {
 	}
 
 	rv := reflect.ValueOf(model)
-	for rv.Kind() == reflect.Ptr {
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return make(map[string]any) // 空指针直接返回空 map
 		}

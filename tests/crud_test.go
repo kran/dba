@@ -312,6 +312,35 @@ func TestUpdate_Expr_Exec(t *testing.T) {
 	}
 }
 
+func TestVal_Int(t *testing.T) {
+	q, db := newQ(t)
+	db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, val INTEGER)")
+	db.Exec("INSERT INTO items VALUES (1, 10)")
+	db.Exec("INSERT INTO items VALUES (2, 20)")
+
+	count, err := stupidql.Scalar[int](q.Add("SELECT COUNT(1) FROM items"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2, got %d", count)
+	}
+}
+
+func TestVal_String(t *testing.T) {
+	q, db := newQ(t)
+	db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+	db.Exec("INSERT INTO items VALUES (1, 'hello')")
+
+	name, err := stupidql.Scalar[string](q.Add("SELECT name FROM items WHERE id = #{1}", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "hello" {
+		t.Errorf("expected hello, got %q", name)
+	}
+}
+
 // TestUpdate_SliceExpanded 切片参数会被 sqlx.In 展开，这是预期行为。
 // 若要传 PG Array/JSON 等列值，需用 pq.Array、json.RawMessage 等包装类型。
 func TestUpdate_SliceExpanded(t *testing.T) {
