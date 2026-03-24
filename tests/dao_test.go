@@ -115,7 +115,7 @@ func TestDao_Update(t *testing.T) {
 	dao, _ := setupDao(t)
 	dao.Create(Item{Name: "alice", Val: 1})
 
-	affected, err := dao.Update(map[string]any{"val": 99}, "WHERE id = #{1}", 1)
+	affected, err := dao.Update(map[string]any{"val": 99}, "id = #{1}", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestDao_Delete(t *testing.T) {
 	dao.Create(Item{Name: "a", Val: 1})
 	dao.Create(Item{Name: "b", Val: 2})
 
-	affected, err := dao.Delete("WHERE id = #{1}", 1)
+	affected, err := dao.Delete("id = #{1}", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

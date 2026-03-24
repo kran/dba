@@ -91,11 +91,11 @@ INTO "t" ("name") VALUES (?)`
 
 func TestUpdate_Struct(t *testing.T) {
 	q, _ := newQ(t)
-	sql, args, err := q.Update("users", testUser{ID: 1, Name: "bob"}, "WHERE id = #{1}", 1).ToSQL()
+	sql, args, err := q.Update("users", testUser{ID: 1, Name: "bob"}, "id = #{1}", 1).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"users\" SET \"id\"=?, \"name\"=?\nWHERE id = ?"
+	want := "UPDATE \"users\" SET \"id\"=?, \"name\"=? WHERE\nid = ?"
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -106,11 +106,11 @@ func TestUpdate_Struct(t *testing.T) {
 
 func TestUpdate_Map(t *testing.T) {
 	q, _ := newQ(t)
-	sql, args, err := q.Update("users", map[string]any{"name": "bob"}, "WHERE id = #{1}", 5).ToSQL()
+	sql, args, err := q.Update("users", map[string]any{"name": "bob"}, "id = #{1}", 5).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"users\" SET \"name\"=?\nWHERE id = ?"
+	want := "UPDATE \"users\" SET \"name\"=? WHERE\nid = ?"
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -121,11 +121,11 @@ func TestUpdate_Map(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	q, _ := newQ(t)
-	sql, args, err := q.Delete("users", "WHERE id = #{1}", 99).ToSQL()
+	sql, args, err := q.Delete("users", "id = #{1}", 99).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "DELETE FROM \"users\"\nWHERE id = ?"
+	want := "DELETE FROM \"users\" WHERE\nid = ?"
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -201,12 +201,12 @@ func TestUpdate_Expr_NoArgs(t *testing.T) {
 	sql, args, err := q.Update("users", map[string]any{
 		"version": stupidql.NewExpr("version+1"),
 		"name":    "alice",
-	}, "WHERE id = #{1}", 1).ToSQL()
+	}, "id = #{1}", 1).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// map 排序: name, version
-	want := "UPDATE \"users\" SET \"name\"=?, \"version\"=version+1\nWHERE id = ?"
+	want := "UPDATE \"users\" SET \"name\"=?, \"version\"=version+1 WHERE\nid = ?"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -222,11 +222,11 @@ func TestUpdate_Expr_WithMacro(t *testing.T) {
 	sql, args, err := q.Update("users", map[string]any{
 		"score": stupidql.NewExpr("score+#{1}+#{2}", 10, 11),
 		"name":  "bob",
-	}, "WHERE id = #{1}", 2).ToSQL()
+	}, "id = #{1}", 2).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"users\" SET \"name\"=?, \"score\"=score+?+?\nWHERE id = ?"
+	want := "UPDATE \"users\" SET \"name\"=?, \"score\"=score+?+? WHERE\nid = ?"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -241,11 +241,11 @@ func TestUpdate_Expr_MultiAdd(t *testing.T) {
 		"score": stupidql.NewExpr("score+#{1}+#{2}", 10, 11),
 		"age":   stupidql.NewExpr("age+#{1}", 1),
 		"name":  "bob",
-	}, "WHERE id = #{1}", 2).ToSQL()
+	}, "id = #{1}", 2).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"users\" SET \"age\"=age+?, \"name\"=?, \"score\"=score+?+?\nWHERE id = ?"
+	want := "UPDATE \"users\" SET \"age\"=age+?, \"name\"=?, \"score\"=score+?+? WHERE\nid = ?"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -259,11 +259,11 @@ func TestUpdate_Expr_IdentifierMacro(t *testing.T) {
 	// Expr 内也能用 @{} 标识符转义
 	sql, args, err := q.Update("stats", map[string]any{
 		"total": stupidql.NewExpr("@{1}+#{2}", "count", 1),
-	}, "WHERE id = #{1}", 5).ToSQL()
+	}, "id = #{1}", 5).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"stats\" SET \"total\"=\"count\"+?\nWHERE id = ?"
+	want := "UPDATE \"stats\" SET \"total\"=\"count\"+? WHERE\nid = ?"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -300,7 +300,7 @@ func TestUpdate_Expr_Exec(t *testing.T) {
 
 	_, err = q.Update("counters", map[string]any{
 		"val": stupidql.NewExpr("val+?", 5),
-	}, "WHERE id = #{1}", 1).Exec()
+	}, "id = #{1}", 1).Exec()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,12 +349,12 @@ func TestUpdate_SliceExpanded(t *testing.T) {
 		"name": "极客",
 		"tags": []string{"golang", "sql"},
 	}
-	sql, args, err := q.Update("users", data, "WHERE id = #{1}", 1).ToSQL()
+	sql, args, err := q.Update("users", data, "id = #{1}", 1).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// tags 切片被展开为两个 ?，共 4 个参数
-	wantSQL := "UPDATE \"users\" SET \"name\"=?, \"tags\"=?, ?\nWHERE id = ?"
+	wantSQL := "UPDATE \"users\" SET \"name\"=?, \"tags\"=?, ? WHERE\nid = ?"
 	if sql != wantSQL {
 		t.Errorf("sql:\n got  %q\n want %q", sql, wantSQL)
 	}
@@ -415,7 +415,7 @@ func TestUpdate_Exec(t *testing.T) {
 	}
 	db.Exec("INSERT INTO users VALUES (1, 'alice')")
 
-	_, err = q.Update("users", map[string]any{"name": "bob"}, "WHERE id = #{1}", 1).Exec()
+	_, err = q.Update("users", map[string]any{"name": "bob"}, "id = #{1}", 1).Exec()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestDelete_Exec(t *testing.T) {
 	db.Exec("INSERT INTO users VALUES (1, 'alice')")
 	db.Exec("INSERT INTO users VALUES (2, 'bob')")
 
-	_, err = q.Delete("users", "WHERE id = #{1}", 1).Exec()
+	_, err = q.Delete("users", "id = #{1}", 1).Exec()
 	if err != nil {
 		t.Fatal(err)
 	}

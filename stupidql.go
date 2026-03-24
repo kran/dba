@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	FIELD  = "FIELD*"
-	IGNORE = "IGNORE*"
+	F = "@fields"
+	I = "@ignore"
 )
 
 type H = map[string]any
@@ -87,6 +87,29 @@ func Scalar[T any](d *StupidQL) (T, error) {
 	var v T
 	err := d.Get(&v)
 	return v, err
+}
+
+// Page 泛型分页查询，要求 q 使用 Mark(F, ...) 标记 SELECT 字段
+// 内部用 COUNT(1) 替换 F 查总数，原 query 加 LIMIT/OFFSET 查数据
+func Page[T any](q *StupidQL, page, size int) ([]T, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 10
+	}
+
+	// 查总数：替换 F 为 COUNT(1)
+	total, err := Scalar[int64](q.Mark(F, "COUNT(1)"))
+	if err != nil || total == 0 {
+		return nil, total, err
+	}
+
+	// 查数据
+	var items []T
+	offset := (page - 1) * size
+	err = q.Add("LIMIT #{1} OFFSET #{2}", size, offset).List(&items)
+	return items, total, err
 }
 
 // copy 实现不可变模式 (Immutable)
@@ -343,7 +366,7 @@ func (d *StupidQL) Error() error {
 
 func (d *StupidQL) Select(table string, where string, args ...any) *StupidQL {
 	return d.Add("SELECT").
-		Mark(FIELD, "*").
+		Mark(F, "*").
 		Add("FROM "+d.quoter(table)+" WHERE "+where, args)
 }
 
@@ -376,7 +399,7 @@ func (d *StupidQL) Insert(table string, data any) *StupidQL {
 		strings.Join(quotedCols, ", "),
 		strings.Join(placeholders, ", "),
 	)
-	return d.Add("INSERT").Mark(IGNORE, "").Add(query, bindArgs...)
+	return d.Add("INSERT").Mark(I, "").Add(query, bindArgs...)
 }
 
 // Update 生成并追加 UPDATE ... SET 语句
@@ -401,7 +424,7 @@ func (d *StupidQL) Update(table string, data any, where string, args ...any) *St
 			bindArgs = append(bindArgs, vals[i])
 		}
 	}
-	query := fmt.Sprintf("UPDATE %s SET %s",
+	query := fmt.Sprintf("UPDATE %s SET %s WHERE",
 		d.quoter(table),
 		strings.Join(setClauses, ", "),
 	)
@@ -410,7 +433,7 @@ func (d *StupidQL) Update(table string, data any, where string, args ...any) *St
 
 // Delete 生成并执行 DELETE FROM 语句
 func (d *StupidQL) Delete(table string, where string, args ...any) *StupidQL {
-	return d.Add(fmt.Sprintf("DELETE FROM %s", d.quoter(table))).Add(where, args...)
+	return d.Add(fmt.Sprintf("DELETE FROM %s WHERE", d.quoter(table))).Add(where, args...)
 }
 
 // ==========================================
