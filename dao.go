@@ -73,7 +73,7 @@ func (d *Dao[T]) Create(data T) (int64, error) {
 	driver := d.q.driverName
 	if driver == "postgres" || driver == "pgx" {
 		var pk int64
-		err := d.q.Insert(d.table, data).Add("RETURNING " + d.quotedPK).Get(&pk)
+		_, err := d.q.Insert(d.table, data).Add("RETURNING " + d.quotedPK).Get(&pk)
 		return pk, err
 	}
 
@@ -100,27 +100,23 @@ func (d *Dao[T]) Delete(where string, args ...any) (int64, error) {
 }
 
 // GetByID 根据主键获取单条记录
-func (d *Dao[T]) GetByID(id any) (T, error) {
+func (d *Dao[T]) GetByID(id any) (*T, error) {
 	var v T
-	err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+d.quotedPK+" = #{1}", id).Get(&v)
-	return v, err
+	found, err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+d.quotedPK+" = #{1}", id).Get(&v)
+	if !found || err != nil {
+		return nil, err
+	}
+	return &v, err
 }
 
 // Get 根据条件获取单条记录
-func (d *Dao[T]) Get(where string, args ...any) (T, error) {
+func (d *Dao[T]) Get(where string, args ...any) (*T, error) {
 	var v T
-	err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).Get(&v)
-	return v, err
-}
-
-// FindByID 根据主键查找，不存在返回 (nil, nil)
-func (d *Dao[T]) FindByID(id any) (*T, error) {
-	return Find[T](d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+d.quotedPK+" = #{1}", id))
-}
-
-// Find 根据条件查找，不存在返回 (nil, nil)
-func (d *Dao[T]) Find(where string, args ...any) (*T, error) {
-	return Find[T](d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...))
+	found, err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).Get(&v)
+	if !found || err != nil {
+		return nil, err
+	}
+	return &v, err
 }
 
 // List 根据条件获取多条记录
@@ -139,12 +135,14 @@ func (d *Dao[T]) All() ([]T, error) {
 
 // Count 根据条件计数
 func (d *Dao[T]) Count(where string, args ...any) (int64, error) {
-	return Scalar[int64](d.q.Add("SELECT COUNT(1) FROM "+d.quotedTbl+" WHERE "+where, args...))
+	count, _, err := Scalar[int64](d.q.Add("SELECT COUNT(1) FROM "+d.quotedTbl+" WHERE "+where, args...))
+	return count, err
 }
 
 // CountAll 全表计数
 func (d *Dao[T]) CountAll() (int64, error) {
-	return Scalar[int64](d.q.Add("SELECT COUNT(1) FROM " + d.quotedTbl))
+	count, _, err := Scalar[int64](d.q.Add("SELECT COUNT(1) FROM " + d.quotedTbl))
+	return count, err
 }
 
 // Exists 判断是否存在满足条件的记录

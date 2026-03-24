@@ -1,31 +1,16 @@
 package stupidql
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 )
 
-// Find 泛型查询单条记录，不存在返回 (nil, nil)，存在返回 (*T, nil)
-func Find[T any](q *StupidQL) (*T, error) {
-	var v T
-	err := q.Get(&v)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &v, nil
-}
-
 // Scalar 泛型函数，获取单个标量值（如 COUNT、MAX、单列查询等）
-func Scalar[T any](d *StupidQL) (T, error) {
+func Scalar[T any](d *StupidQL) (T, bool, error) {
 	var v T
-	err := d.Get(&v)
-	return v, err
+	found, err := d.Get(&v)
+	return v, found, err
 }
 
 // Page 泛型分页查询，要求 q 使用 Mark(F, ...) 标记 SELECT 字段
@@ -43,7 +28,7 @@ func Page[T any](q *StupidQL, page, size int) ([]T, int64, error) {
 	}
 
 	// 查总数：替换 F 为 COUNT(1)
-	total, err := Scalar[int64](q.Mark(F, "COUNT(1)"))
+	total, _, err := Scalar[int64](q.Mark(F, "COUNT(1)"))
 	var items []T
 	if err != nil || total == 0 {
 		return items, total, err

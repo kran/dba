@@ -95,7 +95,7 @@ func TestMiddleware_Chain_Order(t *testing.T) {
 			}
 		})
 
-	count, err := stupidql.Scalar[int](chained.Add("SELECT COUNT(1) FROM mw_test3"))
+	count, _, err := stupidql.Scalar[int](chained.Add("SELECT COUNT(1) FROM mw_test3"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestLogMiddleware_Debug(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	logged := q.Use(stupidql.LogMiddleware(logger, 0))
-	count, err := stupidql.Scalar[int](logged.Add("SELECT COUNT(1) FROM log_test"))
+	count, _, err := stupidql.Scalar[int](logged.Add("SELECT COUNT(1) FROM log_test"))
 	if err != nil {
 		t.Fatal(err)
 	}

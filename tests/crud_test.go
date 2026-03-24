@@ -318,7 +318,7 @@ func TestVal_Int(t *testing.T) {
 	db.Exec("INSERT INTO items VALUES (1, 10)")
 	db.Exec("INSERT INTO items VALUES (2, 20)")
 
-	count, err := stupidql.Scalar[int](q.Add("SELECT COUNT(1) FROM items"))
+	count, _, err := stupidql.Scalar[int](q.Add("SELECT COUNT(1) FROM items"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,50 +332,12 @@ func TestVal_String(t *testing.T) {
 	db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
 	db.Exec("INSERT INTO items VALUES (1, 'hello')")
 
-	name, err := stupidql.Scalar[string](q.Add("SELECT name FROM items WHERE id = #{1}", 1))
+	name, _, err := stupidql.Scalar[string](q.Add("SELECT name FROM items WHERE id = #{1}", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if name != "hello" {
 		t.Errorf("expected hello, got %q", name)
-	}
-}
-
-func TestFind_Found(t *testing.T) {
-	q, db := newQ(t)
-	db.Exec("CREATE TABLE items2 (id INTEGER PRIMARY KEY, name TEXT)")
-	db.Exec("INSERT INTO items2 VALUES (1, 'hello')")
-
-	type Row struct {
-		ID   int    `db:"id"`
-		Name string `db:"name"`
-	}
-	row, err := stupidql.Find[Row](q.Add("SELECT * FROM items2 WHERE id = #{1}", 1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if row == nil {
-		t.Fatal("expected non-nil")
-	}
-	if row.Name != "hello" {
-		t.Errorf("expected hello, got %q", row.Name)
-	}
-}
-
-func TestFind_NotFound(t *testing.T) {
-	q, db := newQ(t)
-	db.Exec("CREATE TABLE items3 (id INTEGER PRIMARY KEY, name TEXT)")
-
-	type Row struct {
-		ID   int    `db:"id"`
-		Name string `db:"name"`
-	}
-	row, err := stupidql.Find[Row](q.Add("SELECT * FROM items3 WHERE id = #{1}", 999))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if row != nil {
-		t.Errorf("expected nil, got %+v", *row)
 	}
 }
 

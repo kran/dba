@@ -284,25 +284,38 @@ func (d *StupidQL) List(dest interface{}) error {
 }
 
 // Get 映射单行到 Struct，dest 可以是 *SomeStruct 或 *map[string]any
-func (d *StupidQL) Get(dest interface{}) error {
+func (d *StupidQL) Get(dest any) (found bool, err error) {
 	if m, ok := dest.(*map[string]any); ok {
 		rows, err := d.Rows()
 		if err != nil {
-			return err
+			return false, err
 		}
 		defer rows.Close()
+
 		if !rows.Next() {
 			if err := rows.Err(); err != nil {
-				return err
+				return false, err // 真正的游标异常
 			}
-			return sql.ErrNoRows
+			return false, nil
 		}
-		return rows.MapScan(*m)
+
+		if err := rows.MapScan(*m); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	_, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
+
+	_, err = d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return nil, sqlx.GetContext(ctx, d.db, dest, query, args...)
 	})
-	return err
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // Exec 执行非查询 SQL

@@ -40,7 +40,7 @@ func TestDao_Create(t *testing.T) {
 
 	item, _ := dao.GetByID(id)
 	if item.Name != "foo" || item.Val != 10 {
-		t.Errorf("got %+v", item)
+		t.Errorf("got %+v", *item)
 	}
 }
 
@@ -64,8 +64,23 @@ func TestDao_Get(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if item == nil {
+		t.Fatal("expected non-nil")
+	}
 	if item.Name != "bob" || item.Val != 2 {
-		t.Errorf("got %+v", item)
+		t.Errorf("got %+v", *item)
+	}
+}
+
+func TestDao_Get_NotFound(t *testing.T) {
+	dao, _ := setupDao(t)
+
+	item, err := dao.Get("name = #{1}", "nobody")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item != nil {
+		t.Errorf("expected nil, got %+v", *item)
 	}
 }
 
@@ -77,47 +92,6 @@ func TestDao_GetByID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Name != "alice" {
-		t.Errorf("got %+v", item)
-	}
-}
-
-func TestDao_FindByID_Found(t *testing.T) {
-	dao, _ := setupDao(t)
-	dao.Create(Item{Name: "alice", Val: 42})
-
-	item, err := dao.FindByID(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if item == nil {
-		t.Fatal("expected non-nil")
-	}
-	if item.Name != "alice" || item.Val != 42 {
-		t.Errorf("got %+v", *item)
-	}
-}
-
-func TestDao_FindByID_NotFound(t *testing.T) {
-	dao, _ := setupDao(t)
-
-	item, err := dao.FindByID(999)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if item != nil {
-		t.Errorf("expected nil, got %+v", *item)
-	}
-}
-
-func TestDao_Find_Found(t *testing.T) {
-	dao, _ := setupDao(t)
-	dao.Create(Item{Name: "alice", Val: 1})
-
-	item, err := dao.Find("name = #{1}", "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
 	if item == nil {
 		t.Fatal("expected non-nil")
 	}
@@ -126,10 +100,10 @@ func TestDao_Find_Found(t *testing.T) {
 	}
 }
 
-func TestDao_Find_NotFound(t *testing.T) {
+func TestDao_GetByID_NotFound(t *testing.T) {
 	dao, _ := setupDao(t)
 
-	item, err := dao.Find("name = #{1}", "nobody")
+	item, err := dao.GetByID(999)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +332,7 @@ func TestDao_Q_CustomQuery(t *testing.T) {
 	dao.Create(Item{Name: "b", Val: 20})
 
 	// 使用 Q() 构建自定义查询
-	sum, err := stupidql.Scalar[int64](dao.Q().Add("SELECT SUM(val) FROM items"))
+	sum, _, err := stupidql.Scalar[int64](dao.Q().Add("SELECT SUM(val) FROM items"))
 	if err != nil {
 		t.Fatal(err)
 	}

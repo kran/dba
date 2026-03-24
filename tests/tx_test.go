@@ -18,7 +18,7 @@ func setupItemsTable(t *testing.T, q *stupidql.StupidQL) {
 func countItems(t *testing.T, q *stupidql.StupidQL) int {
 	t.Helper()
 	var n int
-	if err := q.Add("SELECT COUNT(*) FROM items").Get(&n); err != nil {
+	if _, err := q.Add("SELECT COUNT(*) FROM items").Get(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
