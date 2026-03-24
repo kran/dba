@@ -99,6 +99,10 @@ func Page[T any](q *StupidQL, page, size int) ([]T, int64, error) {
 		size = 10
 	}
 
+	if _, ok := q.marks[F]; !ok {
+		return nil, 0, fmt.Errorf("page requires Mark(F, ...) in query")
+	}
+
 	// 查总数：替换 F 为 COUNT(1)
 	total, err := Scalar[int64](q.Mark(F, "COUNT(1)"))
 	if err != nil || total == 0 {
