@@ -56,6 +56,7 @@ type StupidQL struct {
 	ctx         context.Context
 	err         error
 	quoter      Quoter
+	driverName  string
 	middlewares []Middleware
 }
 
@@ -66,13 +67,14 @@ func NewStupidQL(db *sqlx.DB) *StupidQL {
 		quoter = MySQLQuoter
 	}
 	return &StupidQL{
-		queries:     make([]string, 0),
-		args:        make([][]any, 0),
-		marks:       make(map[string]int),
-		db:          db,
-		rawDB:       db,
-		ctx:         context.Background(),
-		quoter:      quoter,
+		queries:    make([]string, 0),
+		args:       make([][]any, 0),
+		marks:      make(map[string]int),
+		db:         db,
+		rawDB:      db,
+		ctx:        context.Background(),
+		quoter:     quoter,
+		driverName: db.DriverName(),
 	}
 }
 
@@ -90,14 +92,15 @@ func Scalar[T any](d *StupidQL) (T, error) {
 // copy 实现不可变模式 (Immutable)
 func (d *StupidQL) copy() *StupidQL {
 	clone := &StupidQL{
-		marks:   make(map[string]int),
-		queries: make([]string, len(d.queries)),
-		args:    make([][]any, len(d.args)),
-		db:      d.db,
-		rawDB:   d.rawDB,
-		ctx:     d.ctx,
-		err:     d.err,
-		quoter:  d.quoter,
+		marks:      make(map[string]int),
+		queries:    make([]string, len(d.queries)),
+		args:       make([][]any, len(d.args)),
+		db:         d.db,
+		rawDB:      d.rawDB,
+		ctx:        d.ctx,
+		err:        d.err,
+		quoter:     d.quoter,
+		driverName: d.driverName,
 	}
 	copy(clone.queries, d.queries)
 	copy(clone.args, d.args)
