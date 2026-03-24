@@ -114,6 +114,13 @@ func (d *StupidQL) WithContext(ctx context.Context) *StupidQL {
 	return clone
 }
 
+// Quoter change quoter
+func (d *StupidQL) Quoter(quoter Quoter) *StupidQL {
+	clone := d.copy()
+	clone.quoter = quoter
+	return clone
+}
+
 // Unsafe 返回一个忽略未映射列的 StupidQL（不报 "missing destination" 错误）
 func (d *StupidQL) Unsafe() *StupidQL {
 	clone := d.copy()
@@ -227,10 +234,6 @@ func (d *StupidQL) build() (string, []any, error) {
 
 	return query, flatArgs, nil
 }
-
-// ==========================================
-// 委托给 sqlx 执行的终端方法
-// ==========================================
 
 // Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT
 func (d *StupidQL) Batch(rows [][]any) *StupidQL {
@@ -459,44 +462,6 @@ func (d *StupidQL) Transaction(fn func(*StupidQL) error) error {
 		return err
 	}
 	return txDuck.Commit()
-}
-
-// IsOk 检查传入的值是否为 "ok" (非 nil, 非空白字符串, 非空集合/数组/字典)
-func IsOk(v any) bool {
-	if v == nil {
-		return false
-	}
-
-	// 常用类型的快速路径 (Type Switch) - 提升性能，避免反射开销
-	switch val := v.(type) {
-	case string:
-		return strings.TrimSpace(val) != ""
-	}
-
-	// 借助反射处理动态类型 (Slice, Array, Map, 指针, 自定义别名等)
-	rv := reflect.ValueOf(v)
-
-	// 解引用：处理指针和接口的嵌套情况
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			return false
-		}
-		rv = rv.Elem()
-	}
-
-	// 根据具体的底层数据结构（Kind）进行判断
-	switch rv.Kind() {
-	case reflect.String:
-		// 处理类似 `type MyString string` 这种自定义别名类型
-		return strings.TrimSpace(rv.String()) != ""
-	case reflect.Slice, reflect.Array, reflect.Map:
-		return rv.Len() > 0
-	case reflect.Invalid:
-		// 防御性兜底，通常在 v 是彻底的 nil 时会走到这里
-		return false
-	default:
-		return true
-	}
 }
 
 func (d *StupidQL) parseText(tpl string, args ...any) (string, []any) {

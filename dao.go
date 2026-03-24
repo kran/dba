@@ -29,22 +29,36 @@ func NewDao[T any](q *StupidQL, table string) *Dao[T] {
 	}
 }
 
-// PrimaryKey 设置主键列名，返回自身以支持链式调用
-func (d *Dao[T]) PrimaryKey(pk string) *Dao[T] {
-	d.pk = pk
-	d.quotedPK = d.q.quoter(pk)
-	return d
-}
-
-// WithTx 返回一个使用事务连接的 DAO 副本
-func (d *Dao[T]) WithTx(tx *StupidQL) *Dao[T] {
+func (d *Dao[T]) copy() *Dao[T] {
 	return &Dao[T]{
-		q:         tx,
+		q:         d.q,
 		table:     d.table,
 		quotedTbl: d.quotedTbl,
 		pk:        d.pk,
 		quotedPK:  d.quotedPK,
 	}
+}
+
+// PrimaryKey 设置主键列名，返回自身以支持链式调用
+func (d *Dao[T]) PrimaryKey(pk string) *Dao[T] {
+	clone := d.copy()
+	clone.pk = pk
+	clone.quotedPK = d.q.quoter(pk)
+	return clone
+}
+
+func (d *Dao[T]) TableName(table string) *Dao[T] {
+	clone := d.copy()
+	clone.table = table
+	clone.quotedTbl = d.q.quoter(table)
+	return clone
+}
+
+// WithTx 返回一个使用事务连接的 DAO 副本
+func (d *Dao[T]) WithTx(tx *StupidQL) *Dao[T] {
+	clone := d.copy()
+	clone.q = tx
+	return clone
 }
 
 // Q 返回底层 StupidQL，用于自定义查询
@@ -59,7 +73,7 @@ func (d *Dao[T]) Create(data T) (int64, error) {
 	driver := d.q.driverName
 	if driver == "postgres" || driver == "pgx" {
 		var pk int64
-		err := d.q.Insert(d.table, data).Add("RETURNING "+d.quotedPK).Get(&pk)
+		err := d.q.Insert(d.table, data).Add("RETURNING " + d.quotedPK).Get(&pk)
 		return pk, err
 	}
 
@@ -97,6 +111,16 @@ func (d *Dao[T]) Get(where string, args ...any) (T, error) {
 	var v T
 	err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).Get(&v)
 	return v, err
+}
+
+// FindByID 根据主键查找，不存在返回 (nil, nil)
+func (d *Dao[T]) FindByID(id any) (*T, error) {
+	return Find[T](d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+d.quotedPK+" = #{1}", id))
+}
+
+// Find 根据条件查找，不存在返回 (nil, nil)
+func (d *Dao[T]) Find(where string, args ...any) (*T, error) {
+	return Find[T](d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...))
 }
 
 // List 根据条件获取多条记录
