@@ -240,15 +240,11 @@ func TestBuild_VarDefaultSimpleText(t *testing.T) {
 
 // ==================== @{} 标识符转义 ====================
 
-func TestBuild_IdentifierLiteral(t *testing.T) {
+func TestBuild_IdentifierNoArgError(t *testing.T) {
 	q, _ := newQ(t)
-	sql, _, err := q.Add("SELECT @{user} FROM t").ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 无 args，fallback 到字面量
-	if sql != `SELECT "user" FROM t` {
-		t.Errorf("got %q", sql)
+	_, _, err := q.Add("SELECT @{user} FROM t").ToSQL()
+	if err == nil {
+		t.Error("expected error for @{} with no args")
 	}
 }
 
@@ -277,14 +273,11 @@ func TestBuild_MultipleIdentifiers(t *testing.T) {
 
 // ==================== !{} 原始输出 ====================
 
-func TestBuild_RawLiteral(t *testing.T) {
+func TestBuild_RawNoArgError(t *testing.T) {
 	q, _ := newQ(t)
-	sql, _, err := q.Add("ORDER BY !{created_at DESC}").ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "ORDER BY created_at DESC" {
-		t.Errorf("got %q", sql)
+	_, _, err := q.Add("ORDER BY !{created_at DESC}").ToSQL()
+	if err == nil {
+		t.Error("expected error for !{} with no args")
 	}
 }
 

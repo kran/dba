@@ -304,25 +304,23 @@ func (d *Sqlo) build() (string, []any, error) {
 					}
 				}
 
-			case '@': // 标识符安全转义 @{1} 或 @{name} 或 @{literal}
+			case '@': // 标识符安全转义 @{1} 或 @{name}
 				val, err := resolveArg(n.args, content)
 				if err != nil {
-					sqlBuilder.WriteString(d.quoter(content))
+					return err
 				} else if val == nil {
 					return fmt.Errorf("sqlo: @{%s} resolved to nil", content)
-				} else {
-					sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", val)))
 				}
+				sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", val)))
 
-			case '!': // 纯文本原样输出 !{1} 或 !{name} 或 !{literal}
+			case '!': // 纯文本原样输出 !{1} 或 !{name}
 				val, err := resolveArg(n.args, content)
 				if err != nil {
-					sqlBuilder.WriteString(content)
+					return err
 				} else if val == nil {
 					return fmt.Errorf("sqlo: !{%s} resolved to nil", content)
-				} else {
-					sqlBuilder.WriteString(fmt.Sprintf("%v", val))
 				}
+				sqlBuilder.WriteString(fmt.Sprintf("%v", val))
 			}
 
 			i = end + 1

@@ -61,13 +61,13 @@ Built-in formats: `sqlo.QuestionMarkFormat`, `sqlo.DollarFormat`.
 | `#{1}` | Bind parameter by positional index (1-based) |
 | `#{name}` | Bind parameter from named arg (last arg as struct/map) |
 | `${key:default}` | Variable expansion — uses `Var(key, ...)` if set, otherwise `default` |
-| `@{1}` / `@{name}` | Identifier quoting (table/column names); literal fallback if no arg |
-| `!{1}` / `!{name}` | Raw interpolation (injection risk); literal fallback if no arg |
+| `@{1}` / `@{name}` | Identifier quoting (table/column names);  |
+| `!{1}` / `!{name}` | Raw interpolation (injection risk); |
 | `\#{...}` | Escape — outputs `#{...}` literally (also works for `\${`, `\@{`, `\!{`) |
 
 Slices passed to `#{}` are auto-expanded: `#{1}` with `[]int{1,2,3}` → `$1, $2, $3`.
 
-`@{}` and `!{}` return an error if the resolved value is `nil`.
+`@{}` and `!{}` return an error if the resolved value is `nil` or no value found.
 
 ### Methods
 
