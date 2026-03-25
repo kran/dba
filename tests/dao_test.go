@@ -325,6 +325,135 @@ func TestDao_CreateRaw(t *testing.T) {
 	}
 }
 
+// ==================== Hook 测试 ====================
+
+type HookItem struct {
+	ID   int    `db:"id,omitempty"`
+	Name string `db:"name"`
+	Val  int    `db:"val"`
+}
+
+func (h *HookItem) SqloBeforeCreate() error {
+	if h.Name == "" {
+		return errors.New("name is required")
+	}
+	h.Name = "hook_" + h.Name // 钩子修改字段
+	return nil
+}
+
+func (h *HookItem) SqloBeforeUpdate() error {
+	if h.Val < 0 {
+		return errors.New("val must be non-negative")
+	}
+	return nil
+}
+
+func setupHookDao(t *testing.T) *sqlo.Dao[HookItem] {
+	t.Helper()
+	q, db := newQ(t)
+	_, err := db.Exec(`CREATE TABLE hook_items (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		val INTEGER NOT NULL DEFAULT 0
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sqlo.NewDao[HookItem](q, "hook_items")
+}
+
+func TestDao_Hook_OnCreate_ModifiesField(t *testing.T) {
+	dao := setupHookDao(t)
+	id, err := dao.Create(HookItem{Name: "alice", Val: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _ := dao.GetByID(id)
+	if item.Name != "hook_alice" {
+		t.Errorf("expected hook_alice, got %q", item.Name)
+	}
+}
+
+func TestDao_Hook_OnCreate_Pointer(t *testing.T) {
+	dao := setupHookDao(t)
+	id, err := dao.Create(&HookItem{Name: "bob", Val: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _ := dao.GetByID(id)
+	if item.Name != "hook_bob" {
+		t.Errorf("expected hook_bob, got %q", item.Name)
+	}
+}
+
+func TestDao_Hook_OnCreate_Error(t *testing.T) {
+	dao := setupHookDao(t)
+	_, err := dao.Create(HookItem{Name: "", Val: 1})
+	if err == nil || err.Error() != "name is required" {
+		t.Errorf("expected 'name is required', got %v", err)
+	}
+}
+
+func TestDao_Hook_OnCreate_Map_SkipsHook(t *testing.T) {
+	dao := setupHookDao(t)
+	id, err := dao.Create(map[string]any{"name": "raw", "val": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _ := dao.GetByID(id)
+	if item.Name != "raw" {
+		t.Errorf("expected raw (no hook), got %q", item.Name)
+	}
+}
+
+func TestDao_Hook_OnUpdate_Error(t *testing.T) {
+	dao := setupHookDao(t)
+	dao.Create(HookItem{Name: "x", Val: 1})
+
+	_, err := dao.Update(HookItem{Name: "x", Val: -1}, "id = #{1}", 1)
+	if err == nil || err.Error() != "val must be non-negative" {
+		t.Errorf("expected 'val must be non-negative', got %v", err)
+	}
+}
+
+func TestDao_Hook_OnUpdate_Map_SkipsHook(t *testing.T) {
+	dao := setupHookDao(t)
+	dao.Create(HookItem{Name: "x", Val: 1})
+
+	affected, err := dao.Update(map[string]any{"val": -1}, "id = #{1}", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if affected != 1 {
+		t.Errorf("expected 1 affected, got %d", affected)
+	}
+	item, _ := dao.GetByID(1)
+	if item.Val != -1 {
+		t.Errorf("expected -1 (no hook), got %d", item.Val)
+	}
+}
+
+func TestDao_Hook_CreateRaw_ModifiesField(t *testing.T) {
+	dao := setupHookDao(t)
+	result, err := dao.CreateRaw(HookItem{Name: "raw", Val: 5}).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result.LastInsertId()
+	item, _ := dao.GetByID(id)
+	if item.Name != "hook_raw" {
+		t.Errorf("expected hook_raw, got %q", item.Name)
+	}
+}
+
+func TestDao_Hook_CreateRaw_Error(t *testing.T) {
+	dao := setupHookDao(t)
+	_, err := dao.CreateRaw(HookItem{Name: "", Val: 1}).Exec()
+	if err == nil || err.Error() != "name is required" {
+		t.Errorf("expected 'name is required', got %v", err)
+	}
+}
+
 func TestDao_Q_CustomQuery(t *testing.T) {
 	dao, _ := setupDao(t)
 	dao.Create(Item{Name: "a", Val: 10})

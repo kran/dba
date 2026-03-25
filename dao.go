@@ -9,6 +9,14 @@ func execRowsAffected(q *Sqlo) (int64, error) {
 	return result.RowsAffected()
 }
 
+type SqloBeforeCreate interface {
+	SqloBeforeCreate() error
+}
+
+type SqloBeforeUpdate interface {
+	SqloBeforeUpdate() error
+}
+
 // Dao 泛型 DAO，提供基础 CRUD 操作
 type Dao[T any] struct {
 	q         *Sqlo
@@ -69,7 +77,16 @@ func (d *Dao[T]) Q() *Sqlo {
 // Create 插入单条记录并返回自增主键
 // PG: INSERT ... RETURNING pk
 // 其它: INSERT → LastInsertId
-func (d *Dao[T]) Create(data T) (int64, error) {
+func (d *Dao[T]) Create(data any) (int64, error) {
+	if p := d.resolve(data); p != nil {
+		if h, ok := any(p).(SqloBeforeCreate); ok {
+			if err := h.SqloBeforeCreate(); err != nil {
+				return 0, err
+			}
+		}
+		data = *p
+	}
+
 	driver := d.q.driverName
 	if driver == "postgres" || driver == "pgx" || driver == "pq" {
 		var pk int64
@@ -85,12 +102,31 @@ func (d *Dao[T]) Create(data T) (int64, error) {
 }
 
 // CreateRaw 插入单条记录，返回 *Sqlo 供用户继续链式操作
-func (d *Dao[T]) CreateRaw(data T) *Sqlo {
+func (d *Dao[T]) CreateRaw(data any) *Sqlo {
+	if p := d.resolve(data); p != nil {
+		if h, ok := any(p).(SqloBeforeCreate); ok {
+			if err := h.SqloBeforeCreate(); err != nil {
+				clone := d.q.copy()
+				clone.err = err
+				return clone
+			}
+		}
+		data = *p
+	}
 	return d.q.Insert(d.table, data)
 }
 
 // Update 根据条件更新记录，返回影响行数
 func (d *Dao[T]) Update(data any, where string, args ...any) (int64, error) {
+	if p := d.resolve(data); p != nil {
+		if h, ok := any(p).(SqloBeforeUpdate); ok {
+			if err := h.SqloBeforeUpdate(); err != nil {
+				return 0, err
+			}
+		}
+		data = *p // hook 可能修改了字段，用修改后的值
+	}
+
 	return execRowsAffected(d.q.Update(d.table, data, where, args...))
 }
 
@@ -149,4 +185,15 @@ func (d *Dao[T]) CountAll() (int64, error) {
 func (d *Dao[T]) Exists(where string, args ...any) (bool, error) {
 	count, err := d.Count(where, args...)
 	return count > 0, err
+}
+
+func (d *Dao[T]) resolve(data any) *T {
+	switch v := data.(type) {
+	case T:
+		return &v
+	case *T:
+		return v
+	default:
+		return nil
+	}
 }

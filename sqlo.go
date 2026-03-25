@@ -80,9 +80,6 @@ func New(db *sqlx.DB) *Sqlo {
 	} else if driver == "mysql" {
 		quoter = MySQLQuoter
 		format = QuestionMarkFormat
-	} else if driver == "duckdb" {
-		quoter = AnsiQuoter
-		format = QuestionMarkFormat
 	}
 
 	return &Sqlo{
