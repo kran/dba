@@ -71,7 +71,7 @@ func (d *Dao[T]) Q() *Sqlo {
 // 其它: INSERT → LastInsertId
 func (d *Dao[T]) Create(data T) (int64, error) {
 	driver := d.q.driverName
-	if driver == "postgres" || driver == "pgx" {
+	if driver == "postgres" || driver == "pgx" || driver == "pq" {
 		var pk int64
 		_, err := d.q.Insert(d.table, data).Add("RETURNING " + d.quotedPK).Get(&pk)
 		return pk, err
