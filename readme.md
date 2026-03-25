@@ -4,7 +4,7 @@
 
 ## Design Philosophy
 
-1. **Immutability**: Every method that mutates state (`Add`, `Mark`, `AddIf`) returns a new copy. The original instance is never modified, making it safe for concurrent use and reuse across requests.
+1. **Immutability**: Every method that mutates state (`Add`, `Var`, `AddIf`) returns a new copy. The original instance is never modified, making it safe for concurrent use and reuse across requests.
 2. **SQL complexity stays in SQL**: No semantic builder chains — you write SQL, `sqlo` handles parameter binding, identifier quoting, and dialect translation.
 3. **Explicit over implicit**: Zero values are included by default. Fields are only omitted from `INSERT`/`UPDATE` when tagged `db:"name,omitempty"` and the value is zero.
 4. **Deterministic output**: Columns from maps and structs are sorted lexicographically, ensuring consistent SQL for query plan cache reuse.
@@ -29,7 +29,12 @@ dbx, _ := sqlx.Connect("postgres", "user=foo dbname=bar sslmode=disable")
 q := sqlo.New(dbx)
 ```
 
-`New` auto-detects the driver: MySQL uses backtick quoting, everything else uses ANSI double-quote. For other dialects, override with `Quoter`:
+`New` auto-detects the driver:
+- **PostgreSQL/pgx/DuckDB**: ANSI double-quote quoting + `$1` placeholders
+- **MySQL**: Backtick quoting + `?` placeholders
+- **Others (SQLite etc.)**: ANSI double-quote quoting + `?` placeholders
+
+Override with `Quoter` or `Format`:
 
 ```go
 // MSSQL uses [bracket] quoting
@@ -37,10 +42,13 @@ mssqlQuoter := func(s string) string {
     return "[" + strings.ReplaceAll(s, "]", "]]") + "]"
 }
 q = q.Quoter(mssqlQuoter)
-// @{table} → [table], @{column} → [column]
+
+// Override placeholder format
+q = q.Format(sqlo.DollarFormat)
 ```
 
-Built-in quoters are exported for convenience: `sqlo.AnsiQuoter`, `sqlo.MySQLQuoter`.
+Built-in quoters: `sqlo.AnsiQuoter`, `sqlo.MySQLQuoter`.
+Built-in formats: `sqlo.QuestionMarkFormat`, `sqlo.DollarFormat`.
 
 ---
 
@@ -52,28 +60,39 @@ Built-in quoters are exported for convenience: `sqlo.AnsiQuoter`, `sqlo.MySQLQuo
 |--------|----------|
 | `#{1}` | Bind parameter by positional index (1-based) |
 | `#{name}` | Bind parameter from named arg (last arg as struct/map) |
-| `@{1}` / `@{name}` | Identifier quoting (table/column names) |
-| `!{1}` / `!{name}` | Raw interpolation (injection risk — use carefully) |
-| `??` | Literal `?` (for PostgreSQL JSONB operators) |
+| `${key:default}` | Variable expansion — uses `Var(key, ...)` if set, otherwise `default` |
+| `@{1}` / `@{name}` | Identifier quoting (table/column names); literal fallback if no arg |
+| `!{1}` / `!{name}` | Raw interpolation (injection risk); literal fallback if no arg |
+| `\#{...}` | Escape — outputs `#{...}` literally (also works for `\${`, `\@{`, `\!{`) |
+
+Slices passed to `#{}` are auto-expanded: `#{1}` with `[]int{1,2,3}` → `$1, $2, $3`.
+
+`@{}` and `!{}` return an error if the resolved value is `nil`.
 
 ### Methods
 
-- `Add(query, args...)` — append a SQL fragment, parse macros
+- `Add(query, args...)` — append a SQL fragment
 - `AddIf(cond, query, args...)` — conditional append
-- `Mark(name, query, args...)` — named slot, can be overridden later
+- `Var(name, query, args...)` — register a named variable, expanded when `${name}` appears
 
 ```go
 // Positional
 q.Add("SELECT * FROM users WHERE status = #{1}", "active")
 
 // Named (map or struct as last arg)
-q.Add("SELECT * FROM @{table} WHERE id = #{id}", map[string]any{
-    "table": "users",
-    "id":    42,
+q.Add("WHERE id = #{id} AND name = #{name}", map[string]any{
+    "id":   42,
+    "name": "alice",
 })
 
-// Mark: reserve FIELD slot for later override (e.g. Page)
-q.Add("SELECT").Mark(sqlo.F, "id, name").Add("FROM users")
+// Var: define a reusable slot
+base := q.Add("SELECT ${F:*} FROM users ORDER BY id")
+base.Var(sqlo.F, "id, name").ToSQL() // SELECT id, name FROM users ORDER BY id
+base.ToSQL()                          // SELECT * FROM users ORDER BY id (default)
+
+// Inline default with Var override
+q.Add("SELECT ${F:*} FROM users ${order:ORDER BY id}").
+    Var("order", "ORDER BY name DESC")
 ```
 
 ---
@@ -88,36 +107,36 @@ type User struct {
     Name string `db:"name"`
 }
 
-// Select: shorthand for simple queries, implicitly marks F="*" (compatible with Page)
+// Select: shorthand, implicitly uses ${F:*} (compatible with Page)
 q.Select("users", "age > #{1} ORDER BY age", 18)
-// SELECT * FROM "users" WHERE age > ? ORDER BY age
+// SELECT "id", "name" FROM "users" WHERE age > $1 ORDER BY age
 
 q.Insert("users", User{Name: "alice"})
-// INSERT INTO "users" ("name") VALUES (?)
+// INSERT INTO "users" ("name") VALUES ($1)
 
 q.Update("users", map[string]any{"name": "bob"}, "id = #{1}", 42)
-// UPDATE "users" SET "name"=? WHERE id = ?
+// UPDATE "users" SET "name"=$1 WHERE id = $2
 
 q.Delete("users", "id = #{1}", 42)
-// DELETE FROM "users" WHERE id = ?
+// DELETE FROM "users" WHERE id = $1
 ```
 
 ### Expr — raw SQL values
 
-Use `sqlo.NewExpr` to embed raw SQL expressions in `Insert`/`Update` values:
+Use `sqlo.NewExpr` to embed raw SQL expressions in `Insert`/`Update` values. Expr values are expanded through the build engine via `Var`, so `#{}` macros work naturally inside them:
 
 ```go
 q.Update("stats", map[string]any{
     "views": sqlo.NewExpr("views + 1"),
     "score": sqlo.NewExpr("score + #{1}", 10),
 }, "id = #{1}", 1)
-// UPDATE "stats" SET "score"=score + ?, "views"=views + 1 WHERE
-// id = ?
+// UPDATE "stats" SET "score"=score + $1, "views"=views + 1 WHERE
+// id = $2
 ```
 
 ### Batch — multi-row value groups
 
-`Batch` generates `(?,?), (?,?), ...` and appends it to the current query. Works for bulk INSERT and PostgreSQL multi-column `IN`:
+`Batch` generates `(?,?), (?,?), ...` and appends it to the current query:
 
 ```go
 users := [][]any{
@@ -127,11 +146,10 @@ users := [][]any{
 }
 // Bulk INSERT
 q.Add("INSERT INTO users (id, name) VALUES").Batch(users).Exec()
-// INSERT INTO users (id, name) VALUES (?,?), (?,?), (?,?)
+// INSERT INTO users (id, name) VALUES ($1,$2), ($3,$4), ($5,$6)
 
-// PG multi-column IN
+// Multi-column IN
 q.Add("SELECT * FROM users WHERE (id, name) IN (").Batch(users).Add(")")
-// SELECT * FROM users WHERE (id, name) IN ((?,?), (?,?), (?,?))
 ```
 
 ---
@@ -154,15 +172,18 @@ All terminal methods go through the middleware chain.
 // Single scalar value
 count, _, err := sqlo.Scalar[int64](q.Add("SELECT COUNT(1) FROM users"))
 
-// Pagination — query must use Mark(sqlo.F, ...) for SELECT fields
-// sql.Select() has the `sqlo.F` mark implicitly, for simple queries
-items, total, err := sqlo.Page[User](q.Select("users", "age > ? order by age", 18), page, size)
-
-// complicate queries
+// Pagination — query must contain ${F:...} or use Var(sqlo.F, ...)
 items, total, err := sqlo.Page[User](
-    q.Add("SELECT").Mark(sqlo.F, "u.*, o.count").
-        Add("FROM users u LEFT JOIN orders o ON u.id = o.user_id").
+    q.Add("SELECT ${F:*} FROM users WHERE age > #{1} ORDER BY id", 18),
+    page, size,
+)
+
+// Complex join query with Page
+items, total, err := sqlo.Page[User](
+    q.Add("SELECT ${F:u.id, u.name, COUNT(o.id) AS orders} FROM users u").
+        Add("LEFT JOIN orders o ON u.id = o.user_id").
         AddIf(name != "", "WHERE u.name = #{1}", name).
+        Add("GROUP BY u.id, u.name").
         Add("ORDER BY u.id DESC"),
     page, size,
 )
@@ -229,7 +250,7 @@ type User struct {
 
 dao := sqlo.NewDao[User](q, "users")
 dao = dao.PrimaryKey("id") // default is "id", cloned
-dao = dao.TableName("users_1") // change table name, for table partitions, cloned 
+dao = dao.TableName("users_1") // change table name, for table partitions, cloned
 
 // Create returns the generated PK
 id, err := dao.Create(User{Name: "alice"})

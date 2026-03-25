@@ -21,5 +21,5 @@ func newDB(t *testing.T) *sqlx.DB {
 func newQ(t *testing.T) (*sqlo.Sqlo, *sqlx.DB) {
 	t.Helper()
 	db := newDB(t)
-	return sqlo.New(db), db
+	return sqlo.New(db).Format(sqlo.DollarFormat), db
 }

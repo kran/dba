@@ -36,7 +36,7 @@ func TestAdd_PositionalMacro(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sql != "WHERE id = ? AND age > ?" {
+	if sql != "WHERE id = $1 AND age > $2" {
 		t.Errorf("got %q", sql)
 	}
 	if len(args) != 2 || args[0] != 42 || args[1] != 18 {
@@ -53,7 +53,7 @@ func TestAdd_NamedMacro_Map(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sql != "WHERE name = ? AND age > ?" {
+	if sql != "WHERE name = $1 AND age > $2" {
 		t.Errorf("got %q", sql)
 	}
 	if len(args) != 2 || args[0] != "alice" || args[1] != 18 {
@@ -71,7 +71,7 @@ func TestAdd_NamedMacro_Struct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sql != "WHERE name = ? AND age > ?" {
+	if sql != "WHERE name = $1 AND age > $2" {
 		t.Errorf("got %q", sql)
 	}
 	if len(args) != 2 || args[0] != "bob" || args[1] != 20 {
@@ -112,7 +112,7 @@ func TestAdd_InSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sql != "WHERE id IN (?, ?, ?)" {
+	if sql != "WHERE id IN ($1, $2, $3)" {
 		t.Errorf("got %q", sql)
 	}
 	if len(args) != 3 {
@@ -126,7 +126,7 @@ func TestAddIf_True(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sql != "SELECT 1\nWHERE id = ?" {
+	if sql != "SELECT 1\nWHERE id = $1" {
 		t.Errorf("got %q", sql)
 	}
 	if len(args) != 1 || args[0] != 5 {
@@ -148,32 +148,32 @@ func TestAddIf_False(t *testing.T) {
 	}
 }
 
-func TestMark_Override(t *testing.T) {
+func TestVar_Override(t *testing.T) {
 	q, _ := newQ(t)
-	base := q.Add("SELECT *").Mark("order", "ORDER BY id")
-	overridden := base.Mark("order", "ORDER BY name")
+	base := q.Add("SELECT * ${order:ORDER BY id}")
+	overridden := base.Var("order", "ORDER BY name")
 
 	sql1, _, _ := base.ToSQL()
 	sql2, _, _ := overridden.ToSQL()
 
-	if sql1 != "SELECT *\nORDER BY id" {
+	if sql1 != "SELECT * ORDER BY id" {
 		t.Errorf("base got %q", sql1)
 	}
-	if sql2 != "SELECT *\nORDER BY name" {
+	if sql2 != "SELECT * ORDER BY name" {
 		t.Errorf("overridden got %q", sql2)
 	}
 }
 
-func TestMark_WithArgs(t *testing.T) {
+func TestVar_WithArgs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.
-		Add("SELECT *").
-		Mark("where", "WHERE id = #{1}", 99).
+		Add("SELECT * ${where}", "ignored").
+		Var("where", "WHERE id = #{1}", 99).
 		ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sql != "SELECT *\nWHERE id = ?" {
+	if sql != "SELECT * WHERE id = $1" {
 		t.Errorf("got %q", sql)
 	}
 	if len(args) != 1 || args[0] != 99 {
@@ -192,74 +192,27 @@ func TestImmutability(t *testing.T) {
 	}
 }
 
-// ?? 转义：写字面量 ? 而不被 sqlx.In/Rebind 当作参数占位符处理
-// 典型场景：PostgreSQL JSONB 运算符 (data ?? 'key')
-func TestBuild_DoubleQuestionMark_Preserved(t *testing.T) {
-	q, _ := newQ(t)
-	sql, args, err := q.Add("WHERE data ?? 'key'").ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "WHERE data ? 'key'" {
-		t.Errorf("got %q", sql)
-	}
-	if len(args) != 0 {
-		t.Errorf("expected no args, got %v", args)
-	}
-}
-
-func TestBuild_DoubleQuestionMark_WithParams(t *testing.T) {
-	q, _ := newQ(t)
-	// ?? 是字面量 ?，#{1} 是绑定参数，两者共存
-	sql, args, err := q.Add("WHERE data ??| #{1} AND id = #{2}", "key", 42).ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "WHERE data ?| ? AND id = ?" {
-		t.Errorf("got %q", sql)
-	}
-	if len(args) != 2 || args[0] != "key" || args[1] != 42 {
-		t.Errorf("expected [key 42], got %v", args)
-	}
-}
-
-func TestBuild_DoubleQuestionMark_NotExpandedByIn(t *testing.T) {
-	q, _ := newQ(t)
-	ids := []int{1, 2, 3}
-	// ?? 不应被 sqlx.In 展开，IN 里的切片才展开
-	sql, args, err := q.Add("WHERE data ?? 'k' AND id IN (#{1})", ids).ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "WHERE data ? 'k' AND id IN (?, ?, ?)" {
-		t.Errorf("got %q", sql)
-	}
-	if len(args) != 3 {
-		t.Errorf("expected 3 args, got %v", args)
-	}
-}
-
 func TestError_MissingPositionalArg(t *testing.T) {
 	q, _ := newQ(t)
-	result := q.Add("WHERE id = #{1}") // no args
-	if result.Error() == nil {
+	_, _, err := q.Add("WHERE id = #{1}").ToSQL() // no args
+	if err == nil {
 		t.Error("expected error for missing positional arg")
 	}
 }
 
 func TestError_MissingNamedArg(t *testing.T) {
 	q, _ := newQ(t)
-	result := q.Add("WHERE id = #{missing}", map[string]any{"other": 1})
-	if result.Error() == nil {
+	_, _, err := q.Add("WHERE id = #{missing}", map[string]any{"other": 1}).ToSQL()
+	if err == nil {
 		t.Error("expected error for missing named arg")
 	}
 }
 
 func TestError_Propagates(t *testing.T) {
 	q, _ := newQ(t)
-	// error set in first Add should propagate through chain
-	result := q.Add("WHERE id = #{1}").Add("AND name = #{1}", "alice")
-	if result.Error() == nil {
+	// error from build should surface
+	_, _, err := q.Add("WHERE id = #{1}").Add("AND name = #{1}", "alice").ToSQL()
+	if err == nil {
 		t.Error("expected error to propagate")
 	}
 }

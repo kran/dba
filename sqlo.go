@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jmoiron/sqlx/reflectx"
-	"regexp"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -14,15 +14,13 @@ import (
 )
 
 const (
-	F = "@fields"
-	I = "@ignore"
+	F = "F"
+	I = "I"
 )
 
 type H = map[string]any
 
-// Middleware 中间件类型，洋葱模型
-type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
-type Middleware func(next ExecFunc) ExecFunc
+var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
 
 // Expr 表示一个原始 SQL 表达式，用于 Insert/Update 中需要非绑定值的场景
 type Expr struct {
@@ -30,12 +28,19 @@ type Expr struct {
 	Args []any
 }
 
-var (
-	formatPhPattern = regexp.MustCompile(`([#@!])\{([^}]+?)}`)
-	intPattern      = regexp.MustCompile(`^\d+$`)
-)
+func NewExpr(sql string, args ...any) Expr {
+	return Expr{SQL: sql, Args: args}
+}
 
-var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
+// Middleware 中间件类型，洋葱模型
+type Middleware func(next ExecFunc) ExecFunc
+type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
+
+// PlaceholderFormat 用于多库兼容 (PG的 $1, MySQL的 ?)
+type PlaceholderFormat func(idx int) string
+
+func QuestionMarkFormat(_ int) string { return "?" }
+func DollarFormat(idx int) string     { return "$" + strconv.Itoa(idx) }
 
 // Quoter 用于 @{} 宏的标识符安全转义 (比如把 user 转为 `user` 或 "user")
 type Quoter func(string) string
@@ -43,60 +48,71 @@ type Quoter func(string) string
 func MySQLQuoter(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
 func AnsiQuoter(s string) string  { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-// Sqlo 是一个不可变的动态 SQL 拼装引擎
-type Sqlo struct {
-	queries []string
-	args    [][]any
-	marks   map[string]int
+type Node struct {
+	RawSQL string
+	Args   []any
+}
 
-	db          sqlx.ExtContext // sqlx 的核心接口，兼容 *sqlx.DB 和 *sqlx.Tx
-	rawDB       *sqlx.DB        // 仅用于开启事务，进入事务后为 nil
+// Sqlo
+type Sqlo struct {
+	mainNodes []Node          // 主干节点
+	varNodes  map[string]Node // 宏变量节点 (由 Var 注册)
+
+	db          sqlx.ExtContext
+	rawDB       *sqlx.DB
 	ctx         context.Context
 	err         error
 	quoter      Quoter
+	format      PlaceholderFormat
 	driverName  string
 	middlewares []Middleware
 }
 
 // New 包装现有的 sqlx.DB
 func New(db *sqlx.DB) *Sqlo {
-	quoter := AnsiQuoter // 默认使用 PG 引号
-	if db.DriverName() == "mysql" {
+	driver := db.DriverName()
+	quoter := AnsiQuoter
+	format := QuestionMarkFormat
+
+	if driver == "postgres" || driver == "pgx" || driver == "pq" {
+		quoter = AnsiQuoter
+		format = DollarFormat
+	} else if driver == "mysql" {
 		quoter = MySQLQuoter
+		format = QuestionMarkFormat
+	} else if driver == "duckdb" {
+		quoter = AnsiQuoter
+		format = QuestionMarkFormat
 	}
+
 	return &Sqlo{
-		queries:    make([]string, 0),
-		args:       make([][]any, 0),
-		marks:      make(map[string]int),
+		mainNodes:  make([]Node, 0),
+		varNodes:   make(map[string]Node),
 		db:         db,
 		rawDB:      db,
 		ctx:        context.Background(),
 		quoter:     quoter,
-		driverName: db.DriverName(),
+		format:     format,
+		driverName: driver,
 	}
-}
-
-func NewExpr(sql string, args ...any) Expr {
-	return Expr{SQL: sql, Args: args}
 }
 
 // copy 实现不可变模式 (Immutable)
 func (d *Sqlo) copy() *Sqlo {
 	clone := &Sqlo{
-		marks:      make(map[string]int),
-		queries:    make([]string, len(d.queries)),
-		args:       make([][]any, len(d.args)),
+		mainNodes:  make([]Node, len(d.mainNodes)),
+		varNodes:   make(map[string]Node),
 		db:         d.db,
 		rawDB:      d.rawDB,
 		ctx:        d.ctx,
 		err:        d.err,
 		quoter:     d.quoter,
+		format:     d.format,
 		driverName: d.driverName,
 	}
-	copy(clone.queries, d.queries)
-	copy(clone.args, d.args)
-	for k, v := range d.marks {
-		clone.marks[k] = v
+	copy(clone.mainNodes, d.mainNodes)
+	for k, v := range d.varNodes {
+		clone.varNodes[k] = v
 	}
 	if len(d.middlewares) > 0 {
 		clone.middlewares = make([]Middleware, len(d.middlewares))
@@ -116,6 +132,13 @@ func (d *Sqlo) WithContext(ctx context.Context) *Sqlo {
 func (d *Sqlo) Quoter(quoter Quoter) *Sqlo {
 	clone := d.copy()
 	clone.quoter = quoter
+	return clone
+}
+
+// Quoter change quoter
+func (d *Sqlo) Format(formatter PlaceholderFormat) *Sqlo {
+	clone := d.copy()
+	clone.format = formatter
 	return clone
 }
 
@@ -155,22 +178,13 @@ func (d *Sqlo) execute(fn ExecFunc) (any, error) {
 }
 
 // Add 核心方法：添加 SQL 片段并解析宏
-func (d *Sqlo) Add(query string, args ...any) (clone *Sqlo) {
-	clone = d.copy()
+func (d *Sqlo) Add(query string, args ...any) *Sqlo {
+	clone := d.copy()
 	if clone.err != nil {
-		return
+		return clone
 	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			clone.err = fmt.Errorf("sqlo add panic: %v", r)
-		}
-	}()
-
-	parsedQuery, parsedArgs := clone.parseText(query, args...)
-	clone.queries = append(clone.queries, parsedQuery)
-	clone.args = append(clone.args, parsedArgs)
-	return
+	clone.mainNodes = append(clone.mainNodes, Node{RawSQL: query, Args: args})
+	return clone
 }
 
 // AddIf 条件拼接
@@ -181,81 +195,244 @@ func (d *Sqlo) AddIf(cond bool, query string, args ...any) *Sqlo {
 	return d
 }
 
-// Mark 预留或替换命名占位符
-func (d *Sqlo) Mark(name string, query string, args ...any) (clone *Sqlo) {
-	clone = d.copy()
+// Var 注册局部宏变量，替代原有的 Mark
+func (d *Sqlo) Var(key string, query string, args ...any) *Sqlo {
+	clone := d.copy()
 	if clone.err != nil {
-		return
+		return clone
 	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			clone.err = fmt.Errorf("sqlo mark panic: %v", r)
-		}
-	}()
-
-	parsedQuery, parsedArgs := clone.parseText(query, args...)
-
-	if idx, ok := clone.marks[name]; ok {
-		clone.queries[idx] = parsedQuery
-		clone.args[idx] = parsedArgs
-	} else {
-		clone.marks[name] = len(clone.queries)
-		clone.queries = append(clone.queries, parsedQuery)
-		clone.args = append(clone.args, parsedArgs)
-	}
-	return
+	clone.varNodes[key] = Node{RawSQL: query, Args: args}
+	return clone
 }
 
-// build 是连接 sqlx 的核心桥梁
 func (d *Sqlo) build() (string, []any, error) {
 	if d.err != nil {
 		return "", nil, d.err
 	}
 
-	// 1. 拼接所有片段
-	query := strings.Join(d.queries, "\n")
-	var flatArgs []any
-	for _, args := range d.args {
-		flatArgs = append(flatArgs, args...)
+	var sqlBuilder strings.Builder
+	var finalArgs []any
+	argCount := 0 // 全局参数索引，用于生成 $1, $2 等
+
+	sqlBuilder.Grow(512)
+
+	writeText := func(s string) {
+		sqlBuilder.WriteString(s)
 	}
 
-	qmark := "\x00sqlo-qmark\x00"
-	query = strings.ReplaceAll(query, "??", qmark)
-	query, flatArgs, err := sqlx.In(query, flatArgs...)
-	if err != nil {
-		return "", nil, fmt.Errorf("sqlx.In expand failed: %w", err)
+	var parse func(n Node) error
+	parse = func(n Node) error {
+		str := n.RawSQL
+		i := 0
+		for i < len(str) {
+			start := strings.IndexByte(str[i:], '{')
+			if start == -1 {
+				writeText(str[i:])
+				break
+			}
+			start += i
+
+			// 【转义拦截逻辑】：如果看到 \${, \#{, \@{, \!{
+			if start >= 2 && str[start-2] == '\\' && (str[start-1] == '#' || str[start-1] == '$' || str[start-1] == '@' || str[start-1] == '!') {
+				writeText(str[i : start-2])                    // 写入 \ 之前的内容
+				sqlBuilder.WriteString(str[start-1 : start+1]) // 写入如 "#{", 不解析
+				i = start + 1
+				continue
+			}
+
+			// 检查有效前缀
+			if start == 0 || (str[start-1] != '#' && str[start-1] != '$' && str[start-1] != '@' && str[start-1] != '!') {
+				writeText(str[i : start+1])
+				i = start + 1
+				continue
+			}
+
+			prefix := str[start-1]
+			writeText(str[i : start-1])
+
+			end := strings.IndexByte(str[start:], '}')
+			if end == -1 {
+				return fmt.Errorf("sqlo: unclosed brace in %q", str)
+			}
+			end += start
+			content := str[start+1 : end]
+
+			switch prefix {
+			case '#': // 参数绑定 #{1} 或 #{name}
+				argVal, err := resolveArg(n.Args, content)
+				if err != nil {
+					return err
+				}
+
+				// 切片自动展开 (干掉 sqlx.In)
+				rv := reflect.ValueOf(argVal)
+				for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+					if rv.IsNil() {
+						break
+					}
+					rv = rv.Elem() // 完美解引用
+				}
+
+				if argVal != nil && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+					if rv.Len() == 0 {
+						return fmt.Errorf("sqlo: empty slice passed to parameter #{%s}", content)
+					}
+					for j := 0; j < rv.Len(); j++ {
+						if j > 0 {
+							sqlBuilder.WriteString(", ")
+						}
+						argCount++
+						sqlBuilder.WriteString(d.format(argCount))
+						finalArgs = append(finalArgs, rv.Index(j).Interface())
+					}
+				} else {
+					argCount++
+					sqlBuilder.WriteString(d.format(argCount))
+					finalArgs = append(finalArgs, argVal)
+				}
+
+			case '$': // 模板宏 ${key:default} 递归展开
+				parts := strings.SplitN(content, ":", 2)
+				key := strings.TrimSpace(parts[0])
+				if varNode, ok := d.varNodes[key]; ok {
+					if err := parse(varNode); err != nil {
+						return err
+					}
+				} else if len(parts) == 2 {
+					if err := parse(Node{RawSQL: strings.TrimSpace(parts[1])}); err != nil {
+						return err
+					}
+				}
+
+			case '@': // 标识符安全转义 @{1} 或 @{name} 或 @{literal}
+				val, err := resolveArg(n.Args, content)
+				if err != nil {
+					sqlBuilder.WriteString(d.quoter(content))
+				} else if val == nil {
+					return fmt.Errorf("sqlo: @{%s} resolved to nil", content)
+				} else {
+					sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", val)))
+				}
+
+			case '!': // 纯文本原样输出 !{1} 或 !{name} 或 !{literal}
+				val, err := resolveArg(n.Args, content)
+				if err != nil {
+					sqlBuilder.WriteString(content)
+				} else if val == nil {
+					return fmt.Errorf("sqlo: !{%s} resolved to nil", content)
+				} else {
+					sqlBuilder.WriteString(fmt.Sprintf("%v", val))
+				}
+			}
+
+			i = end + 1
+		}
+		return nil
 	}
 
-	query = d.db.Rebind(query)
-	query = strings.ReplaceAll(query, qmark, "?")
+	for i, node := range d.mainNodes {
+		if i > 0 {
+			sqlBuilder.WriteString("\n")
+		}
+		if err := parse(node); err != nil {
+			return "", nil, err
+		}
+	}
 
-	return query, flatArgs, nil
+	return sqlBuilder.String(), finalArgs, nil
+}
+
+// resolveArg 根据 content 尝试解析为位置参数或命名参数
+func resolveArg(args []any, content string) (any, error) {
+	if idx, err := strconv.Atoi(content); err == nil {
+		if idx < 1 || idx > len(args) {
+			return nil, fmt.Errorf("index %d out of bounds", idx)
+		}
+		return args[idx-1], nil
+	}
+	if len(args) == 0 {
+		return nil, fmt.Errorf("no args")
+	}
+	return extractNamedArg(args[len(args)-1], content)
+}
+
+// extractNamedArg 辅助函数：通过反射获取命名参数
+func extractNamedArg(src any, name string) (any, error) {
+	rv := reflect.ValueOf(src)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil, fmt.Errorf("sqlo: named args source is nil pointer")
+		}
+		rv = rv.Elem()
+	}
+
+	if rv.Kind() == reflect.Map {
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("sqlo: map key must be string")
+		}
+		val := rv.MapIndex(reflect.ValueOf(name))
+		if !val.IsValid() {
+			return nil, fmt.Errorf("sqlo: named arg '%s' not found in map", name)
+		}
+		return val.Interface(), nil
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fm := mapper.TypeMap(rv.Type())
+		fi := fm.GetByPath(name)
+		if fi == nil {
+			return nil, fmt.Errorf("sqlo: field '%s' not found in struct", name)
+		}
+		return reflectx.FieldByIndexes(rv, fi.Index).Interface(), nil
+	}
+
+	return nil, fmt.Errorf("sqlo: named args source must be struct or map")
 }
 
 // Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT
 func (d *Sqlo) Batch(rows [][]any) *Sqlo {
 	if len(rows) == 0 {
 		clone := d.copy()
-		clone.err = errors.New("batch: empty rows")
+		clone.err = errors.New("sqlo batch: empty rows")
 		return clone
 	}
+
 	width := len(rows[0])
 	if width == 0 {
 		clone := d.copy()
-		clone.err = errors.New("batch: empty row")
+		clone.err = errors.New("sqlo batch: empty row")
 		return clone
 	}
-	placeholder := "(" + strings.Repeat("?,", width-1) + "?)"
-	placeholders := make([]string, len(rows))
-	for i := range rows {
-		placeholders[i] = placeholder
+
+	var builder strings.Builder
+	builder.Grow(len(rows) * width * 8)
+	args := make([]any, 0, len(rows)*width)
+	argIdx := 1
+
+	for i, row := range rows {
+		if len(row) != width {
+			clone := d.copy()
+			clone.err = fmt.Errorf("sqlo batch: row %d has length %d, expected %d", i, len(row), width)
+			return clone
+		}
+
+		if i > 0 {
+			builder.WriteString(", ")
+		}
+
+		builder.WriteString("(")
+		for j, val := range row {
+			if j > 0 {
+				builder.WriteString(", ")
+			}
+			builder.WriteString(fmt.Sprintf("#{%d}", argIdx))
+			args = append(args, val)
+			argIdx++
+		}
+		builder.WriteString(")")
 	}
-	var args []any
-	for _, row := range rows {
-		args = append(args, row...)
-	}
-	return d.Add(strings.Join(placeholders, ", "), args...)
+
+	return d.Add(builder.String(), args...)
 }
 
 // List 映射多行到 Slice，dest 可以是 *[]SomeStruct 或 *[]map[string]any
@@ -349,14 +526,10 @@ func (d *Sqlo) Error() error {
 }
 
 func (d *Sqlo) Select(table string, where string, args ...any) *Sqlo {
-	return d.Add("SELECT").
-		Mark(F, "*").
-		Add("FROM "+d.quoter(table)+" WHERE "+where, args)
+	return d.Add("SELECT ${"+F+":*} FROM "+d.quoter(table)+" WHERE "+where, args...)
 }
 
 // Insert 生成并追加 INSERT INTO 语句
-// data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
-// 值为 Expr 类型时使用原始 SQL 表达式替代绑定参数
 func (d *Sqlo) Insert(table string, data any) *Sqlo {
 	cols, vals, err := ExtractColsVals(data)
 	if err != nil {
@@ -367,28 +540,28 @@ func (d *Sqlo) Insert(table string, data any) *Sqlo {
 	quotedCols := make([]string, len(cols))
 	placeholders := make([]string, len(cols))
 	var bindArgs []any
+	result := d
+
 	for i, c := range cols {
 		quotedCols[i] = d.quoter(c)
 		if expr, ok := vals[i].(Expr); ok {
-			parsedSQL, parsedArgs := d.parseText(expr.SQL, expr.Args...)
-			placeholders[i] = parsedSQL
-			bindArgs = append(bindArgs, parsedArgs...)
+			varName := fmt.Sprintf("__expr_%d", i)
+			placeholders[i] = "${" + varName + "}"
+			result = result.Var(varName, expr.SQL, expr.Args...)
 		} else {
-			placeholders[i] = "?"
 			bindArgs = append(bindArgs, vals[i])
+			placeholders[i] = fmt.Sprintf("#{%d}", len(bindArgs))
 		}
 	}
-	query := fmt.Sprintf("INTO %s (%s) VALUES (%s)",
+	query := fmt.Sprintf("INSERT ${"+I+"} INTO %s (%s) VALUES (%s)",
 		d.quoter(table),
 		strings.Join(quotedCols, ", "),
 		strings.Join(placeholders, ", "),
 	)
-	return d.Add("INSERT").Mark(I, "").Add(query, bindArgs...)
+	return result.Add(query, bindArgs...)
 }
 
 // Update 生成并追加 UPDATE ... SET 语句
-// data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
-// 值为 Expr 类型时使用原始 SQL 表达式替代绑定参数
 func (d *Sqlo) Update(table string, data any, where string, args ...any) *Sqlo {
 	cols, vals, err := ExtractColsVals(data)
 	if err != nil {
@@ -398,21 +571,23 @@ func (d *Sqlo) Update(table string, data any, where string, args ...any) *Sqlo {
 	}
 	setClauses := make([]string, len(cols))
 	var bindArgs []any
+	result := d
+
 	for i, c := range cols {
 		if expr, ok := vals[i].(Expr); ok {
-			parsedSQL, parsedArgs := d.parseText(expr.SQL, expr.Args...)
-			setClauses[i] = d.quoter(c) + "=" + parsedSQL
-			bindArgs = append(bindArgs, parsedArgs...)
+			varName := fmt.Sprintf("__expr_%d", i)
+			setClauses[i] = d.quoter(c) + "=${" + varName + "}"
+			result = result.Var(varName, expr.SQL, expr.Args...)
 		} else {
-			setClauses[i] = d.quoter(c) + "=?"
 			bindArgs = append(bindArgs, vals[i])
+			setClauses[i] = d.quoter(c) + "=" + fmt.Sprintf("#{%d}", len(bindArgs))
 		}
 	}
-	query := fmt.Sprintf("UPDATE %s SET %s WHERE",
+	setQuery := fmt.Sprintf("UPDATE %s SET %s WHERE",
 		d.quoter(table),
 		strings.Join(setClauses, ", "),
 	)
-	return d.Add(query, bindArgs...).Add(where, args...)
+	return result.Add(setQuery, bindArgs...).Add(where, args...)
 }
 
 // Delete 生成并执行 DELETE FROM 语句
@@ -473,57 +648,4 @@ func (d *Sqlo) Transaction(fn func(*Sqlo) error) error {
 		return err
 	}
 	return txDuck.Commit()
-}
-
-func (d *Sqlo) parseText(tpl string, args ...any) (string, []any) {
-	if !strings.Contains(tpl, "{") {
-		return tpl, args
-	}
-
-	var sqlParams []any
-	var namedArgs map[string]any
-
-	replacedTpl := formatPhPattern.ReplaceAllStringFunc(tpl, func(match string) string {
-		subMatches := formatPhPattern.FindStringSubmatch(match)
-		identity := subMatches[1]
-		key := strings.TrimSpace(subMatches[2])
-
-		var arg any
-
-		// 位置索引 #{1}
-		if intPattern.MatchString(key) {
-			idx, _ := strconv.Atoi(key)
-			if idx < 1 || idx > len(args) {
-				panic(fmt.Sprintf("Index %d out of range", idx))
-			}
-			arg = args[idx-1]
-		} else {
-			// 命名参数 #{name}
-			if namedArgs == nil {
-				if len(args) == 0 {
-					panic("Named argument required but args is empty")
-				}
-				namedArgs = ToMap(args[len(args)-1]) // 取最后一个参数作为数据源
-			}
-			val, ok := namedArgs[key]
-			if !ok {
-				panic(fmt.Sprintf("Named argument '%s' not found", key))
-			}
-			arg = val
-		}
-
-		// 宏替换逻辑
-		switch identity {
-		case "!": // 原生替换 (注意注入风险)
-			return fmt.Sprintf("%v", arg)
-		case "@": // 标识符转义 (安全表名/列名)
-			return d.quoter(fmt.Sprintf("%v", arg))
-		case "#": // 安全的参数绑定
-			sqlParams = append(sqlParams, arg)
-			return "?" // 统一替换为 ?, 后续交由 sqlx.Rebind 处理方言
-		}
-		return match
-	})
-
-	return replacedTpl, sqlParams
 }

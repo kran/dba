@@ -22,9 +22,7 @@ func TestInsert_Struct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT
-
-INTO "users" ("id", "name") VALUES (?, ?)`
+	want := `INSERT  INTO "users" ("id", "name") VALUES ($1, $2)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -40,9 +38,7 @@ func TestInsert_Map(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT
-
-INTO "users" ("age", "name") VALUES (?, ?)`
+	want := `INSERT  INTO "users" ("age", "name") VALUES ($1, $2)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -61,9 +57,7 @@ func TestInsert_SkipDashTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT
-
-INTO "t" ("name") VALUES (?)`
+	want := `INSERT  INTO "t" ("name") VALUES ($1)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -81,9 +75,7 @@ func TestInsert_NoTagFallsBackToFieldName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT
-
-INTO "t" ("name") VALUES (?)`
+	want := `INSERT  INTO "t" ("name") VALUES ($1)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -95,7 +87,7 @@ func TestUpdate_Struct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"users\" SET \"id\"=?, \"name\"=? WHERE\nid = ?"
+	want := "UPDATE \"users\" SET \"id\"=$1, \"name\"=$2 WHERE\nid = $3"
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -110,7 +102,7 @@ func TestUpdate_Map(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"users\" SET \"name\"=? WHERE\nid = ?"
+	want := "UPDATE \"users\" SET \"name\"=$1 WHERE\nid = $2"
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -125,7 +117,7 @@ func TestDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "DELETE FROM \"users\" WHERE\nid = ?"
+	want := "DELETE FROM \"users\" WHERE\nid = $1"
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -142,9 +134,7 @@ func TestInsert_Omitempty_ZeroID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT
-
-INTO "users" ("name") VALUES (?)`
+	want := `INSERT  INTO "users" ("name") VALUES ($1)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -160,9 +150,7 @@ func TestInsert_Omitempty_NonZeroID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT
-
-INTO "users" ("age", "id", "name") VALUES (?, ?, ?)`
+	want := `INSERT  INTO "users" ("age", "id", "name") VALUES ($1, $2, $3)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -206,7 +194,7 @@ func TestUpdate_Expr_NoArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	// map 排序: name, version
-	want := "UPDATE \"users\" SET \"name\"=?, \"version\"=version+1 WHERE\nid = ?"
+	want := "UPDATE \"users\" SET \"name\"=$1, \"version\"=version+1 WHERE\nid = $2"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -226,7 +214,7 @@ func TestUpdate_Expr_WithMacro(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"users\" SET \"name\"=?, \"score\"=score+?+? WHERE\nid = ?"
+	want := "UPDATE \"users\" SET \"name\"=$1, \"score\"=score+$2+$3 WHERE\nid = $4"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -245,7 +233,7 @@ func TestUpdate_Expr_MultiAdd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"users\" SET \"age\"=age+?, \"name\"=?, \"score\"=score+?+? WHERE\nid = ?"
+	want := "UPDATE \"users\" SET \"age\"=age+$1, \"name\"=$2, \"score\"=score+$3+$4 WHERE\nid = $5"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -263,7 +251,7 @@ func TestUpdate_Expr_IdentifierMacro(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "UPDATE \"stats\" SET \"total\"=\"count\"+? WHERE\nid = ?"
+	want := "UPDATE \"stats\" SET \"total\"=\"count\"+$1 WHERE\nid = $2"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -281,7 +269,7 @@ func TestInsert_Expr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "INSERT\n\nINTO \"logs\" (\"created_at\", \"msg\") VALUES (NOW(), ?)"
+	want := "INSERT  INTO \"logs\" (\"created_at\", \"msg\") VALUES (NOW(), $1)"
 	if sql != want {
 		t.Errorf("sql:\n got  %q\n want %q", sql, want)
 	}
@@ -296,10 +284,10 @@ func TestUpdate_Expr_Exec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Exec("INSERT INTO counters VALUES (1, 10)")
+	db.Exec("INSERT  INTO counters VALUES (1, 10)")
 
 	_, err = q.Update("counters", map[string]any{
-		"val": sqlo.NewExpr("val+?", 5),
+		"val": sqlo.NewExpr("val+#{1}", 5),
 	}, "id = #{1}", 1).Exec()
 	if err != nil {
 		t.Fatal(err)
@@ -354,7 +342,7 @@ func TestUpdate_SliceExpanded(t *testing.T) {
 		t.Fatal(err)
 	}
 	// tags 切片被展开为两个 ?，共 4 个参数
-	wantSQL := "UPDATE \"users\" SET \"name\"=?, \"tags\"=?, ? WHERE\nid = ?"
+	wantSQL := "UPDATE \"users\" SET \"name\"=$1, \"tags\"=$2, $3 WHERE\nid = $4"
 	if sql != wantSQL {
 		t.Errorf("sql:\n got  %q\n want %q", sql, wantSQL)
 	}
@@ -375,9 +363,7 @@ func TestInsert_SliceExpanded(t *testing.T) {
 		t.Fatal(err)
 	}
 	// tags 切片被展开，VALUES 从 2 个 ? 变成 3 个
-	wantSQL := `INSERT
-
-INTO "users" ("name", "tags") VALUES (?, ?, ?)`
+	wantSQL := `INSERT  INTO "users" ("name", "tags") VALUES ($1, $2, $3)`
 	if sql != wantSQL {
 		t.Errorf("sql:\n got  %q\n want %q", sql, wantSQL)
 	}

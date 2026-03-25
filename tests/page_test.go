@@ -28,7 +28,7 @@ func setupPageTable(t *testing.T) *sqlo.Sqlo {
 func TestPage_Basic(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(sqlo.F, "*").Add("FROM page_items").Add("ORDER BY id")
+	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
 	items, total, err := sqlo.Page[PageItem](query, 1, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestPage_Basic(t *testing.T) {
 func TestPage_SecondPage(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(sqlo.F, "*").Add("FROM page_items").Add("ORDER BY id")
+	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
 	items, total, err := sqlo.Page[PageItem](query, 2, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestPage_SecondPage(t *testing.T) {
 func TestPage_LastPage(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(sqlo.F, "*").Add("FROM page_items").Add("ORDER BY id")
+	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
 	items, total, err := sqlo.Page[PageItem](query, 3, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -82,9 +82,7 @@ func TestPage_LastPage(t *testing.T) {
 func TestPage_WithWhere(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(sqlo.F, "*").
-		Add("FROM page_items WHERE cat = #{1}", "a").
-		Add("ORDER BY id")
+	query := q.Add("SELECT ${F:*} FROM page_items WHERE cat = #{1} ORDER BY id", "a")
 	items, total, err := sqlo.Page[PageItem](query, 1, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -113,8 +111,7 @@ func TestPage_WithJoin(t *testing.T) {
 		Author string `db:"author"`
 	}
 
-	query := q.Add("SELECT").Mark(sqlo.F, "b.id, b.title, a.name AS author").
-		Add("FROM books b JOIN authors a ON b.author_id = a.id").
+	query := q.Add("SELECT ${F:b.id, b.title, a.name AS author} FROM books b JOIN authors a ON b.author_id = a.id").
 		Add("WHERE a.name = #{1}", "alice").
 		Add("ORDER BY b.id")
 
@@ -136,7 +133,7 @@ func TestPage_WithJoin(t *testing.T) {
 func TestPage_InvalidParams(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(sqlo.F, "*").Add("FROM page_items").Add("ORDER BY id")
+	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
 
 	// page < 1 应当回退到第 1 页
 	items, total, err := sqlo.Page[PageItem](query, 0, 10)
@@ -163,9 +160,7 @@ func TestPage_InvalidParams(t *testing.T) {
 func TestPage_EmptyResult(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(sqlo.F, "*").
-		Add("FROM page_items WHERE cat = #{1}", "nonexistent").
-		Add("ORDER BY id")
+	query := q.Add("SELECT ${F:*} FROM page_items WHERE cat = #{1} ORDER BY id", "nonexistent")
 	items, total, err := sqlo.Page[PageItem](query, 1, 10)
 	if err != nil {
 		t.Fatal(err)

@@ -26,12 +26,23 @@ func Page[T any](q *Sqlo, page, size int) ([]T, int64, error) {
 		size = 10
 	}
 
-	if _, ok := q.marks[F]; !ok {
-		return nil, 0, fmt.Errorf("page requires Mark(F, ...) in query")
+	// 检查 ${F} 或 ${F:...} 是否出现在查询中
+	hasF := false
+	needle := "${" + F
+	for _, node := range q.mainNodes {
+		if strings.Contains(node.RawSQL, needle) {
+			hasF = true
+			break
+		}
+	}
+	if !hasF {
+		if _, ok := q.varNodes[F]; !ok {
+			return nil, 0, fmt.Errorf("page requires ${F:...} or Var(F, ...) in query")
+		}
 	}
 
 	// 查总数：替换 F 为 COUNT(1)
-	total, _, err := Scalar[int64](q.Mark(F, "COUNT(1)"))
+	total, _, err := Scalar[int64](q.Var(F, "COUNT(1)"))
 	var items []T
 	if err != nil || total == 0 {
 		return items, total, err
