@@ -85,15 +85,56 @@ q.Add("WHERE id = #{id} AND name = #{name}", map[string]any{
     "name": "alice",
 })
 
-// Var: define a reusable slot
+```
+
+### Var — declarative variable slots
+
+`Var(name, query, args...)` registers a named variable. It doesn't produce any SQL output by itself — it only takes effect when `${name}` or `${name:default}` appears in the query. This makes it **position-independent** and **purely declarative**.
+
+```go
+// Basic: Var overrides the inline default
 base := q.Add("SELECT ${F:*} FROM users ORDER BY id")
 base.Var(sqlo.F, "id, name").ToSQL() // SELECT id, name FROM users ORDER BY id
-base.ToSQL()                          // SELECT * FROM users ORDER BY id (default)
+base.ToSQL()                          // SELECT * FROM users ORDER BY id (uses default)
 
-// Inline default with Var override
-q.Add("SELECT ${F:*} FROM users ${order:ORDER BY id}").
-    Var("order", "ORDER BY name DESC")
+// Position doesn't matter — these are equivalent
+q.Add("SELECT ${F:*} FROM t").Var(sqlo.F, "id")
+q.Var(sqlo.F, "id").Add("SELECT ${F:*} FROM t")
+
+// Multiple slots with defaults
+q.Add("SELECT ${F:*} FROM users ${where:} ${order:ORDER BY id} ${limit:}").
+    Var("where", "WHERE status = #{1}", "active").
+    Var("limit", "LIMIT #{1}", 20)
+// SELECT * FROM users WHERE status = $1 ORDER BY id LIMIT $2
+
+// Same Var referenced multiple times
+q.Add("SELECT ${F:*} FROM t WHERE ${F:*} IS NOT NULL").
+    Var(sqlo.F, "name")
+// SELECT name FROM t WHERE name IS NOT NULL
+
+// Immutable: Var returns a new copy, base is unchanged
+base  := q.Add("SELECT ${F:*} FROM users")
+count := base.Var(sqlo.F, "COUNT(1)")  // for counting
+data  := base.Add("LIMIT 10")           // for data query
+// base, count, data are three independent queries
+
+// Var with parameter binding — each Var has its own args namespace
+q.Add("SELECT ${F:*} FROM users ${filter}").
+    Var("filter", "WHERE age > #{1} AND city = #{2}", 18, "NYC")
+// SELECT * FROM users WHERE age > $1 AND city = $2
+
+// Nested Var — a Var's SQL can reference other Vars
+q.Add("SELECT * FROM t ${filter}").
+    Var("filter", "WHERE id = #{1} ${extra}", 5).
+    Var("extra", "AND active = #{1}", true)
+// SELECT * FROM t WHERE id = $1 AND active = $2
 ```
+
+**Key properties:**
+- `${key:default}` — if Var not set, uses the text after `:` as fallback (plain text only, no nested `{}`)
+- `${key}` — if Var not set and no default, outputs nothing
+- Each Var has its own args namespace — `#{1}` in different Vars never conflict
+- Var is the mechanism behind `Page` (swaps fields for `COUNT(1)`) and `Expr` (raw SQL in Insert/Update)
 
 ---
 

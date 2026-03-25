@@ -30,11 +30,12 @@ func Page[T any](q *Sqlo, page, size int) ([]T, int64, error) {
 	hasF := false
 	needle := "${" + F
 	for _, node := range q.mainNodes {
-		if strings.Contains(node.RawSQL, needle) {
+		if strings.Contains(node.rawSQL, needle) {
 			hasF = true
 			break
 		}
 	}
+
 	if !hasF {
 		if _, ok := q.varNodes[F]; !ok {
 			return nil, 0, fmt.Errorf("page requires ${F:...} or Var(F, ...) in query")

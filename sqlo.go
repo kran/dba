@@ -48,15 +48,15 @@ type Quoter func(string) string
 func MySQLQuoter(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
 func AnsiQuoter(s string) string  { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-type Node struct {
-	RawSQL string
-	Args   []any
+type node struct {
+	rawSQL string
+	args   []any
 }
 
-// Sqlo
+// Sqlo the builder
 type Sqlo struct {
-	mainNodes []Node          // 主干节点
-	varNodes  map[string]Node // 宏变量节点 (由 Var 注册)
+	mainNodes []node          // 主干节点
+	varNodes  map[string]node // 宏变量节点 (由 Var 注册)
 
 	db          sqlx.ExtContext
 	rawDB       *sqlx.DB
@@ -86,8 +86,8 @@ func New(db *sqlx.DB) *Sqlo {
 	}
 
 	return &Sqlo{
-		mainNodes:  make([]Node, 0),
-		varNodes:   make(map[string]Node),
+		mainNodes:  make([]node, 0),
+		varNodes:   make(map[string]node),
 		db:         db,
 		rawDB:      db,
 		ctx:        context.Background(),
@@ -100,8 +100,8 @@ func New(db *sqlx.DB) *Sqlo {
 // copy 实现不可变模式 (Immutable)
 func (d *Sqlo) copy() *Sqlo {
 	clone := &Sqlo{
-		mainNodes:  make([]Node, len(d.mainNodes)),
-		varNodes:   make(map[string]Node),
+		mainNodes:  make([]node, len(d.mainNodes)),
+		varNodes:   make(map[string]node),
 		db:         d.db,
 		rawDB:      d.rawDB,
 		ctx:        d.ctx,
@@ -135,7 +135,7 @@ func (d *Sqlo) Quoter(quoter Quoter) *Sqlo {
 	return clone
 }
 
-// Quoter change quoter
+// Format change placeholder format
 func (d *Sqlo) Format(formatter PlaceholderFormat) *Sqlo {
 	clone := d.copy()
 	clone.format = formatter
@@ -183,7 +183,7 @@ func (d *Sqlo) Add(query string, args ...any) *Sqlo {
 	if clone.err != nil {
 		return clone
 	}
-	clone.mainNodes = append(clone.mainNodes, Node{RawSQL: query, Args: args})
+	clone.mainNodes = append(clone.mainNodes, node{rawSQL: query, args: args})
 	return clone
 }
 
@@ -201,7 +201,7 @@ func (d *Sqlo) Var(key string, query string, args ...any) *Sqlo {
 	if clone.err != nil {
 		return clone
 	}
-	clone.varNodes[key] = Node{RawSQL: query, Args: args}
+	clone.varNodes[key] = node{rawSQL: query, args: args}
 	return clone
 }
 
@@ -220,9 +220,9 @@ func (d *Sqlo) build() (string, []any, error) {
 		sqlBuilder.WriteString(s)
 	}
 
-	var parse func(n Node) error
-	parse = func(n Node) error {
-		str := n.RawSQL
+	var parse func(n node) error
+	parse = func(n node) error {
+		str := n.rawSQL
 		i := 0
 		for i < len(str) {
 			start := strings.IndexByte(str[i:], '{')
@@ -259,7 +259,7 @@ func (d *Sqlo) build() (string, []any, error) {
 
 			switch prefix {
 			case '#': // 参数绑定 #{1} 或 #{name}
-				argVal, err := resolveArg(n.Args, content)
+				argVal, err := resolveArg(n.args, content)
 				if err != nil {
 					return err
 				}
@@ -299,13 +299,13 @@ func (d *Sqlo) build() (string, []any, error) {
 						return err
 					}
 				} else if len(parts) == 2 {
-					if err := parse(Node{RawSQL: strings.TrimSpace(parts[1])}); err != nil {
+					if err := parse(node{rawSQL: strings.TrimSpace(parts[1])}); err != nil {
 						return err
 					}
 				}
 
 			case '@': // 标识符安全转义 @{1} 或 @{name} 或 @{literal}
-				val, err := resolveArg(n.Args, content)
+				val, err := resolveArg(n.args, content)
 				if err != nil {
 					sqlBuilder.WriteString(d.quoter(content))
 				} else if val == nil {
@@ -315,7 +315,7 @@ func (d *Sqlo) build() (string, []any, error) {
 				}
 
 			case '!': // 纯文本原样输出 !{1} 或 !{name} 或 !{literal}
-				val, err := resolveArg(n.Args, content)
+				val, err := resolveArg(n.args, content)
 				if err != nil {
 					sqlBuilder.WriteString(content)
 				} else if val == nil {
