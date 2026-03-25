@@ -2,6 +2,43 @@
 
 `sqlo` is an immutable, chainable SQL builder and execution engine built on top of `sqlx`.
 
+## Quick Example
+
+```go
+q := sqlo.New(db)
+
+// Define a reusable base query — immutable, safe to share
+base := q.Add("SELECT ${F:u.id, u.name, u.email} FROM users u").
+    Add("JOIN orders o ON o.user_id = u.id WHERE 1 = 1"). //"1 = 1" for empty where, ugly but useful
+    AddIf(req.Status != "", "AND u.status = #{1}", req.Status).
+    AddIf(req.MinAge > 0, "AND u.age >= #{1}", req.MinAge).
+    Add("ORDER BY u.id DESC")
+
+// Paginated list — F is swapped to COUNT(1) for total, then LIMIT/OFFSET for data
+users, total, err := sqlo.Page[User](base, req.Page, req.Size)
+
+// Reuse the same base for a different purpose — original is untouched
+uid, _, err := sqlo.Scalar[int64](base.Var("F", "u.id").Add("LIMIT 1"))
+
+// CRUD with hooks — struct methods run automatically before insert
+type User struct {
+    ID        int       `db:"id,omitempty"`
+    Name      string    `db:"name"`
+    CreatedAt time.Time `db:"created_at"`
+}
+func (u *User) SqloBeforeCreate() error {
+    u.CreatedAt = time.Now()
+    return nil
+}
+
+dao := sqlo.NewDao[User](q, "users")
+id, err := dao.Create(User{Name: "alice"})          // hook sets created_at
+dao.Update(map[string]any{"name": "bob"}, "id = #{1}", id) // map skips hooks
+user, err := dao.GetByID(id)                         // returns *User, nil when not found
+```
+
+---
+
 ## Design Philosophy
 
 1. **Immutability**: Every method that mutates state (`Add`, `Var`, `AddIf`) returns a new copy. The original instance is never modified, making it safe for concurrent use and reuse across requests.
