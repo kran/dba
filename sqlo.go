@@ -1,4 +1,4 @@
-package stupidql
+package sqlo
 
 import (
 	"context"
@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jmoiron/sqlx/reflectx"
-	"reflect"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -45,8 +43,8 @@ type Quoter func(string) string
 func MySQLQuoter(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
 func AnsiQuoter(s string) string  { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-// StupidQL 是一个不可变的动态 SQL 拼装引擎
-type StupidQL struct {
+// Sqlo 是一个不可变的动态 SQL 拼装引擎
+type Sqlo struct {
 	queries []string
 	args    [][]any
 	marks   map[string]int
@@ -60,13 +58,13 @@ type StupidQL struct {
 	middlewares []Middleware
 }
 
-// NewStupidQL 包装现有的 sqlx.DB
-func NewStupidQL(db *sqlx.DB) *StupidQL {
+// New 包装现有的 sqlx.DB
+func New(db *sqlx.DB) *Sqlo {
 	quoter := AnsiQuoter // 默认使用 PG 引号
 	if db.DriverName() == "mysql" {
 		quoter = MySQLQuoter
 	}
-	return &StupidQL{
+	return &Sqlo{
 		queries:    make([]string, 0),
 		args:       make([][]any, 0),
 		marks:      make(map[string]int),
@@ -83,8 +81,8 @@ func NewExpr(sql string, args ...any) Expr {
 }
 
 // copy 实现不可变模式 (Immutable)
-func (d *StupidQL) copy() *StupidQL {
-	clone := &StupidQL{
+func (d *Sqlo) copy() *Sqlo {
+	clone := &Sqlo{
 		marks:      make(map[string]int),
 		queries:    make([]string, len(d.queries)),
 		args:       make([][]any, len(d.args)),
@@ -108,21 +106,21 @@ func (d *StupidQL) copy() *StupidQL {
 }
 
 // WithContext 设置上下文
-func (d *StupidQL) WithContext(ctx context.Context) *StupidQL {
+func (d *Sqlo) WithContext(ctx context.Context) *Sqlo {
 	clone := d.copy()
 	clone.ctx = ctx
 	return clone
 }
 
 // Quoter change quoter
-func (d *StupidQL) Quoter(quoter Quoter) *StupidQL {
+func (d *Sqlo) Quoter(quoter Quoter) *Sqlo {
 	clone := d.copy()
 	clone.quoter = quoter
 	return clone
 }
 
-// Unsafe 返回一个忽略未映射列的 StupidQL（不报 "missing destination" 错误）
-func (d *StupidQL) Unsafe() *StupidQL {
+// Unsafe 返回一个忽略未映射列的 Sqlo（不报 "missing destination" 错误）
+func (d *Sqlo) Unsafe() *Sqlo {
 	clone := d.copy()
 	switch v := d.db.(type) {
 	case *sqlx.DB:
@@ -137,14 +135,14 @@ func (d *StupidQL) Unsafe() *StupidQL {
 }
 
 // Use 添加中间件，返回新实例
-func (d *StupidQL) Use(mw ...Middleware) *StupidQL {
+func (d *Sqlo) Use(mw ...Middleware) *Sqlo {
 	clone := d.copy()
 	clone.middlewares = append(clone.middlewares, mw...)
 	return clone
 }
 
 // execute 构建 SQL 并通过中间件链执行
-func (d *StupidQL) execute(fn ExecFunc) (any, error) {
+func (d *Sqlo) execute(fn ExecFunc) (any, error) {
 	query, args, err := d.build()
 	if err != nil {
 		return nil, err
@@ -157,7 +155,7 @@ func (d *StupidQL) execute(fn ExecFunc) (any, error) {
 }
 
 // Add 核心方法：添加 SQL 片段并解析宏
-func (d *StupidQL) Add(query string, args ...any) (clone *StupidQL) {
+func (d *Sqlo) Add(query string, args ...any) (clone *Sqlo) {
 	clone = d.copy()
 	if clone.err != nil {
 		return
@@ -165,7 +163,7 @@ func (d *StupidQL) Add(query string, args ...any) (clone *StupidQL) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			clone.err = fmt.Errorf("stupidql add panic: %v", r)
+			clone.err = fmt.Errorf("sqlo add panic: %v", r)
 		}
 	}()
 
@@ -176,7 +174,7 @@ func (d *StupidQL) Add(query string, args ...any) (clone *StupidQL) {
 }
 
 // AddIf 条件拼接
-func (d *StupidQL) AddIf(cond bool, query string, args ...any) *StupidQL {
+func (d *Sqlo) AddIf(cond bool, query string, args ...any) *Sqlo {
 	if cond {
 		return d.Add(query, args...)
 	}
@@ -184,7 +182,7 @@ func (d *StupidQL) AddIf(cond bool, query string, args ...any) *StupidQL {
 }
 
 // Mark 预留或替换命名占位符
-func (d *StupidQL) Mark(name string, query string, args ...any) (clone *StupidQL) {
+func (d *Sqlo) Mark(name string, query string, args ...any) (clone *Sqlo) {
 	clone = d.copy()
 	if clone.err != nil {
 		return
@@ -192,7 +190,7 @@ func (d *StupidQL) Mark(name string, query string, args ...any) (clone *StupidQL
 
 	defer func() {
 		if r := recover(); r != nil {
-			clone.err = fmt.Errorf("stupidql mark panic: %v", r)
+			clone.err = fmt.Errorf("sqlo mark panic: %v", r)
 		}
 	}()
 
@@ -210,7 +208,7 @@ func (d *StupidQL) Mark(name string, query string, args ...any) (clone *StupidQL
 }
 
 // build 是连接 sqlx 的核心桥梁
-func (d *StupidQL) build() (string, []any, error) {
+func (d *Sqlo) build() (string, []any, error) {
 	if d.err != nil {
 		return "", nil, d.err
 	}
@@ -222,7 +220,7 @@ func (d *StupidQL) build() (string, []any, error) {
 		flatArgs = append(flatArgs, args...)
 	}
 
-	qmark := "\x00stupidql-qmark\x00"
+	qmark := "\x00sqlo-qmark\x00"
 	query = strings.ReplaceAll(query, "??", qmark)
 	query, flatArgs, err := sqlx.In(query, flatArgs...)
 	if err != nil {
@@ -236,7 +234,7 @@ func (d *StupidQL) build() (string, []any, error) {
 }
 
 // Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT
-func (d *StupidQL) Batch(rows [][]any) *StupidQL {
+func (d *Sqlo) Batch(rows [][]any) *Sqlo {
 	if len(rows) == 0 {
 		clone := d.copy()
 		clone.err = errors.New("batch: empty rows")
@@ -257,11 +255,11 @@ func (d *StupidQL) Batch(rows [][]any) *StupidQL {
 	for _, row := range rows {
 		args = append(args, row...)
 	}
-	return d.Add("VALUES "+strings.Join(placeholders, ", "), args...)
+	return d.Add(strings.Join(placeholders, ", "), args...)
 }
 
 // List 映射多行到 Slice，dest 可以是 *[]SomeStruct 或 *[]map[string]any
-func (d *StupidQL) List(dest interface{}) error {
+func (d *Sqlo) List(dest interface{}) error {
 	if mapSlice, ok := dest.(*[]map[string]any); ok {
 		rows, err := d.Rows()
 		if err != nil {
@@ -284,7 +282,7 @@ func (d *StupidQL) List(dest interface{}) error {
 }
 
 // Get 映射单行到 Struct，dest 可以是 *SomeStruct 或 *map[string]any
-func (d *StupidQL) Get(dest any) (found bool, err error) {
+func (d *Sqlo) Get(dest any) (found bool, err error) {
 	if m, ok := dest.(*map[string]any); ok {
 		rows, err := d.Rows()
 		if err != nil {
@@ -319,7 +317,7 @@ func (d *StupidQL) Get(dest any) (found bool, err error) {
 }
 
 // Exec 执行非查询 SQL
-func (d *StupidQL) Exec() (sql.Result, error) {
+func (d *Sqlo) Exec() (sql.Result, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return d.db.ExecContext(ctx, query, args...)
 	})
@@ -330,7 +328,7 @@ func (d *StupidQL) Exec() (sql.Result, error) {
 }
 
 // Rows 返回原始 *sqlx.Rows，用于流式处理大结果集
-func (d *StupidQL) Rows() (*sqlx.Rows, error) {
+func (d *Sqlo) Rows() (*sqlx.Rows, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return d.db.QueryxContext(ctx, query, args...)
 	})
@@ -341,16 +339,16 @@ func (d *StupidQL) Rows() (*sqlx.Rows, error) {
 }
 
 // ToSQL 返回最终 SQL 和参数，不执行，用于调试和日志
-func (d *StupidQL) ToSQL() (string, []any, error) {
+func (d *Sqlo) ToSQL() (string, []any, error) {
 	return d.build()
 }
 
 // Error 返回 builder 累积的错误
-func (d *StupidQL) Error() error {
+func (d *Sqlo) Error() error {
 	return d.err
 }
 
-func (d *StupidQL) Select(table string, where string, args ...any) *StupidQL {
+func (d *Sqlo) Select(table string, where string, args ...any) *Sqlo {
 	return d.Add("SELECT").
 		Mark(F, "*").
 		Add("FROM "+d.quoter(table)+" WHERE "+where, args)
@@ -359,8 +357,8 @@ func (d *StupidQL) Select(table string, where string, args ...any) *StupidQL {
 // Insert 生成并追加 INSERT INTO 语句
 // data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
 // 值为 Expr 类型时使用原始 SQL 表达式替代绑定参数
-func (d *StupidQL) Insert(table string, data any) *StupidQL {
-	cols, vals, err := extractColsVals(data)
+func (d *Sqlo) Insert(table string, data any) *Sqlo {
+	cols, vals, err := ExtractColsVals(data)
 	if err != nil {
 		clone := d.copy()
 		clone.err = fmt.Errorf("insert: %w", err)
@@ -391,8 +389,8 @@ func (d *StupidQL) Insert(table string, data any) *StupidQL {
 // Update 生成并追加 UPDATE ... SET 语句
 // data 支持 struct（读取 db tag，无 tag 则用字段名）或 map[string]any
 // 值为 Expr 类型时使用原始 SQL 表达式替代绑定参数
-func (d *StupidQL) Update(table string, data any, where string, args ...any) *StupidQL {
-	cols, vals, err := extractColsVals(data)
+func (d *Sqlo) Update(table string, data any, where string, args ...any) *Sqlo {
+	cols, vals, err := ExtractColsVals(data)
 	if err != nil {
 		clone := d.copy()
 		clone.err = fmt.Errorf("update: %w", err)
@@ -418,7 +416,7 @@ func (d *StupidQL) Update(table string, data any, where string, args ...any) *St
 }
 
 // Delete 生成并执行 DELETE FROM 语句
-func (d *StupidQL) Delete(table string, where string, args ...any) *StupidQL {
+func (d *Sqlo) Delete(table string, where string, args ...any) *Sqlo {
 	return d.Add(fmt.Sprintf("DELETE FROM %s WHERE", d.quoter(table))).Add(where, args...)
 }
 
@@ -426,8 +424,8 @@ func (d *StupidQL) Delete(table string, where string, args ...any) *StupidQL {
 // 事务支持
 // ==========================================
 
-// Begin 开启事务，返回携带事务状态的新 StupidQL 实例
-func (d *StupidQL) Begin() (*StupidQL, error) {
+// Begin 开启事务，返回携带事务状态的新 Sqlo 实例
+func (d *Sqlo) Begin() (*Sqlo, error) {
 	if d.rawDB == nil {
 		return nil, errors.New("transaction already started")
 	}
@@ -442,7 +440,7 @@ func (d *StupidQL) Begin() (*StupidQL, error) {
 }
 
 // Commit 提交事务
-func (d *StupidQL) Commit() error {
+func (d *Sqlo) Commit() error {
 	tx, ok := d.db.(*sqlx.Tx)
 	if !ok {
 		return errors.New("no active transaction")
@@ -451,7 +449,7 @@ func (d *StupidQL) Commit() error {
 }
 
 // Rollback 回滚事务
-func (d *StupidQL) Rollback() error {
+func (d *Sqlo) Rollback() error {
 	tx, ok := d.db.(*sqlx.Tx)
 	if !ok {
 		return errors.New("no active transaction")
@@ -461,7 +459,7 @@ func (d *StupidQL) Rollback() error {
 
 // Transaction 闭包事务：fn 返回 error 或发生 panic 时自动回滚。
 // 若当前已在事务中，直接执行 fn（join 外层事务），不开新事务。
-func (d *StupidQL) Transaction(fn func(*StupidQL) error) error {
+func (d *Sqlo) Transaction(fn func(*Sqlo) error) error {
 	if d.rawDB == nil {
 		return fn(d)
 	}
@@ -477,7 +475,7 @@ func (d *StupidQL) Transaction(fn func(*StupidQL) error) error {
 	return txDuck.Commit()
 }
 
-func (d *StupidQL) parseText(tpl string, args ...any) (string, []any) {
+func (d *Sqlo) parseText(tpl string, args ...any) (string, []any) {
 	if !strings.Contains(tpl, "{") {
 		return tpl, args
 	}
@@ -505,7 +503,7 @@ func (d *StupidQL) parseText(tpl string, args ...any) (string, []any) {
 				if len(args) == 0 {
 					panic("Named argument required but args is empty")
 				}
-				namedArgs = toMap(args[len(args)-1]) // 取最后一个参数作为数据源
+				namedArgs = ToMap(args[len(args)-1]) // 取最后一个参数作为数据源
 			}
 			val, ok := namedArgs[key]
 			if !ok {
@@ -528,71 +526,4 @@ func (d *StupidQL) parseText(tpl string, args ...any) (string, []any) {
 	})
 
 	return replacedTpl, sqlParams
-}
-
-// toMap 极简版的反射转换为 map
-func toMap(model any) map[string]any {
-	if m, ok := model.(map[string]any); ok {
-		return m
-	}
-
-	rv := reflect.ValueOf(model)
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			return make(map[string]any) // 空指针直接返回空 map
-		}
-		rv = rv.Elem()
-	}
-	if rv.Kind() != reflect.Struct {
-		panic("named args source must be a struct or map[string]any")
-	}
-
-	structMap := mapper.TypeMap(rv.Type())
-	result := make(map[string]any, len(structMap.Index))
-
-	for _, fi := range structMap.Index {
-		// fi.Name 就是解析好的 `db` tag (或者默认的小写字段名)
-		if fi.Name == "-" || fi.Name == "" {
-			continue
-		}
-
-		val := reflectx.FieldByIndexesReadOnly(rv, fi.Index)
-		if _, hasOmitempty := fi.Options["omitempty"]; hasOmitempty {
-			if val.IsZero() {
-				continue // 如果带有 omitempty 且当前是零值，立刻剔除！
-			}
-		}
-
-		result[fi.Name] = val.Interface()
-	}
-
-	return result
-}
-
-// extractColsVals 从 struct 或 map 中提取列名和对应值
-func extractColsVals(data any) (cols []string, vals []any, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("extract data failed: %v", r)
-		}
-	}()
-
-	m := toMap(data)
-	if len(m) == 0 {
-		return nil, nil, errors.New("no columns found or data must be a struct/map")
-	}
-
-	// 排序保证生成的 SQL 字符串绝对稳定，利于 DB 预编译缓存
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	vals = make([]any, len(keys))
-	for i, k := range keys {
-		vals[i] = m[k]
-	}
-
-	return keys, vals, nil
 }

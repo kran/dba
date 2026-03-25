@@ -1,123 +1,269 @@
-# stupidql
+# sqlo
 
-`stupidql` is an immutable, dynamic SQL builder and execution engine built on top of `sqlx`.
+`sqlo` is an immutable, chainable SQL builder and execution engine built on top of `sqlx`.
 
 ## Design Philosophy
 
-The design of this library follows these core principles:
+1. **Immutability**: Every method that mutates state (`Add`, `Mark`, `AddIf`) returns a new copy. The original instance is never modified, making it safe for concurrent use and reuse across requests.
+2. **SQL complexity stays in SQL**: No semantic builder chains — you write SQL, `sqlo` handles parameter binding, identifier quoting, and dialect translation.
+3. **Explicit over implicit**: Zero values are included by default. Fields are only omitted from `INSERT`/`UPDATE` when tagged `db:"name,omitempty"` and the value is zero.
+4. **Deterministic output**: Columns from maps and structs are sorted lexicographically, ensuring consistent SQL for query plan cache reuse.
+5. **Delegation**: Struct mapping and driver interaction are delegated to `sqlx` and `reflectx`. `sqlo` doesn't reinvent them.
 
-1.  **Immutability**: Core state-mutating methods (`Add`, `Mark`, `AddIf`) return new instance copies. The original instance's state remains unchanged, ensuring safety during concurrent operations and method chaining.
-2.  **Explicit Declaration over Implicit Filtering**: When mapping structs to SQL statements, zero values (e.g., `0`, `""`, `false`) are retained by default. A field is only omitted from `INSERT` or `UPDATE` statements if its struct tag explicitly includes `omitempty` (e.g., `db:"fieldname,omitempty"`) and its value evaluates to the zero value.
-3.  **Deterministic Generation**: When extracting columns and values from Maps or Structs to generate `INSERT` or `UPDATE` statements, keys are strictly sorted in lexicographical order. This guarantees that the generated SQL strings are absolutely consistent, optimizing the utilization of the database's Query Plan Cache.
-4.  **Macro Engine**: Custom wrappers (`#{}`, `@{}`, `!{}`) handle parameter binding, identifier escaping, and raw string replacement. This abstracts away driver-specific placeholders (e.g., `?` vs. `$1`), deferring the final dialect translation and slice expansion to `sqlx`'s `Rebind` and `In` functions.
-5.  **Underlying Delegation**: The library does not reinvent reflection mapping or database driver interactions. Data querying and struct conversions are entirely delegated to `sqlx` and its sub-package `reflectx`.
+---
+
+## Installation
+
+```bash
+go get codeberg.org/kran/sqlo
+```
 
 ---
 
 ## Initialization
 
-`stupidql` requires an initialized `*sqlx.DB` instance. It automatically configures the appropriate identifier quoter based on the driver name (e.g., `mysql` or `postgres`).
+```go
+import "codeberg.org/kran/sqlo"
+
+dbx, _ := sqlx.Connect("postgres", "user=foo dbname=bar sslmode=disable")
+q := sqlo.New(dbx)
+```
+
+`New` auto-detects the driver: MySQL uses backtick quoting, everything else uses ANSI double-quote. For other dialects, override with `Quoter`:
 
 ```go
-dbx, _ := sqlx.Connect("postgres", "user=foo dbname=bar sslmode=disable")
-q := stupidql.NewStupidQL(dbx)
+// MSSQL uses [bracket] quoting
+mssqlQuoter := func(s string) string {
+    return "[" + strings.ReplaceAll(s, "]", "]]") + "]"
+}
+q = q.Quoter(mssqlQuoter)
+// @{table} → [table], @{column} → [column]
 ```
+
+Built-in quoters are exported for convenience: `sqlo.AnsiQuoter`, `sqlo.MySQLQuoter`.
 
 ---
 
-## API Usage
+## Core Builder
 
-The API architecture is divided into three functional layers:
+### Macro syntax
 
-### 1. Core Query Builder
+| Syntax | Behavior |
+|--------|----------|
+| `#{1}` | Bind parameter by positional index (1-based) |
+| `#{name}` | Bind parameter from named arg (last arg as struct/map) |
+| `@{1}` / `@{name}` | Identifier quoting (table/column names) |
+| `!{1}` / `!{name}` | Raw interpolation (injection risk — use carefully) |
+| `??` | Literal `?` (for PostgreSQL JSONB operators) |
 
-Used for direct manipulation and appending of SQL fragments, supporting macro variable substitution. Macro data sources can be positional arguments or named properties extracted from the final argument (which must be a Map or Struct).
+### Methods
 
-* **`#{key}` (Parameter Binding)**: Converted to a standard placeholder `?`. The variable is added to the argument list, preventing SQL injection.
-* **`@{key}` (Identifier Escaping)**: Safely escapes table or column names (e.g., formats as `` `table` `` or `"table"` depending on the dialect).
-* **`!{key}` (Raw Replacement)**: Injects the variable directly into the SQL string as plain text (poses an injection risk; must be sanitized by the caller).
-
-**Methods:**
-* `Add(query string, args ...any)`: Parses macros and appends the SQL fragment.
-* `AddIf(cond bool, query string, args ...any)`: Appends the SQL fragment only if `cond` is `true`.
-* `Mark(name string, query string, args ...any)`: Registers or replaces a named placeholder within the current query chain.
+- `Add(query, args...)` — append a SQL fragment, parse macros
+- `AddIf(cond, query, args...)` — conditional append
+- `Mark(name, query, args...)` — named slot, can be overridden later
 
 ```go
-// Positional parameter replacement
-q1 := q.Add("SELECT * FROM users WHERE status = #{1}", "active")
+// Positional
+q.Add("SELECT * FROM users WHERE status = #{1}", "active")
 
-// Named parameter replacement (using a Map)
-q2 := q.Add("SELECT * FROM @{table} WHERE id = #{id}", map[string]any{
+// Named (map or struct as last arg)
+q.Add("SELECT * FROM @{table} WHERE id = #{id}", map[string]any{
     "table": "users",
     "id":    42,
 })
 
-// Mark reservation and replacement
-q3 := q.Add("SELECT").Mark("FIELD*", "id, name").Add("FROM users")
+// Mark: reserve FIELD slot for later override (e.g. Page)
+q.Add("SELECT").Mark(sqlo.F, "id, name").Add("FROM users")
 ```
 
-### 2. DML Abstraction Layer
+---
 
-Generates standard Data Manipulation Language (DML) statements by parsing struct tags via `reflectx`. Struct tags support the `db:"name,omitempty"` syntax.
+## DML Helpers
 
-* **`Insert(table string, data any)`**: Automatically generates an `INSERT INTO` statement based on the provided Struct or Map. Zero-value fields with the `omitempty` tag are excluded.
-* **`Update(table string, data any, where string, args ...any)`**: Generates an `UPDATE table SET ...` statement. Zero-value fields with the `omitempty` tag are excluded.
-* **`Select(table string, where string, args ...any)`**: Generates a basic `SELECT * FROM table WHERE ...` statement. It internally reserves `FIELD*` via `Mark` for subsequent modifications.
-* **`Delete(table string, where string, args ...any)`**: Generates a `DELETE FROM table WHERE ...` statement.
+Generate `SELECT`, `INSERT`, `UPDATE`, `DELETE`. Column order is sorted. `omitempty` zero values are excluded.
 
 ```go
 type User struct {
-    ID     int    `db:"id,omitempty"` // Automatically omitted if 0
-    Name   string `db:"name"`
-    Status string `db:"status"`       // No omitempty; updated/inserted even if ""
+    ID   int    `db:"id,omitempty"` // excluded when 0
+    Name string `db:"name"`
 }
 
-// Generates: INSERT INTO "users" ("name", "status") VALUES (?, ?)
-qInsert := q.Insert("users", User{Name: "Alice", Status: "active"})
+// Select: shorthand for simple queries, implicitly marks F="*" (compatible with Page)
+q.Select("users", "age > #{1} ORDER BY age", 18)
+// SELECT * FROM "users" WHERE age > ? ORDER BY age
 
-// Generates: UPDATE "users" SET "name"=?, "status"=? WHERE id = ?
-qUpdate := q.Update("users", User{Name: "Bob", Status: ""}, "WHERE id = #{1}", 42)
+q.Insert("users", User{Name: "alice"})
+// INSERT INTO "users" ("name") VALUES (?)
+
+q.Update("users", map[string]any{"name": "bob"}, "id = #{1}", 42)
+// UPDATE "users" SET "name"=? WHERE id = ?
+
+q.Delete("users", "id = #{1}", 42)
+// DELETE FROM "users" WHERE id = ?
 ```
 
-### 3. Execution & Mapping Layer
+### Expr — raw SQL values
 
-This layer handles terminal operations. Invoking these methods triggers the underlying `build()` process (which executes slice expansion and dialect-specific placeholder conversion) and submits the final SQL and arguments to `sqlx` for execution.
-
-* **`List(dest interface{}) error`**: Executes the query and maps multiple rows into the provided Slice pointer. Corresponds to `sqlx.SelectContext`.
-* **`Get(dest interface{}) error`**: Executes the query and maps a single row into the provided Struct pointer. Corresponds to `sqlx.GetContext`.
-* **`Exec() (sql.Result, error)`**: Executes a non-query statement (e.g., INSERT/UPDATE/DELETE) and returns the result and error.
-* **`Rows() (*sqlx.Rows, error)`**: Returns the raw cursor for streaming large result sets. Corresponds to `sqlx.QueryxContext`.
+Use `sqlo.NewExpr` to embed raw SQL expressions in `Insert`/`Update` values:
 
 ```go
-var users []User
-err := q.Add("SELECT * FROM users WHERE status = #{1}", "active").List(&users)
-
-var u User
-err = q.Add("SELECT * FROM users WHERE id = #{1}", 1).Get(&u)
-
-result, err := q.Update("users", User{Name: "Charlie"}, "WHERE id = #{1}", 1).Exec()
+q.Update("stats", map[string]any{
+    "views": sqlo.NewExpr("views + 1"),
+    "score": sqlo.NewExpr("score + #{1}", 10),
+}, "id = #{1}", 1)
+// UPDATE "stats" SET "score"=score + ?, "views"=views + 1 WHERE
+// id = ?
 ```
+
+### Batch — multi-row value groups
+
+`Batch` generates `(?,?), (?,?), ...` and appends it to the current query. Works for bulk INSERT and PostgreSQL multi-column `IN`:
+
+```go
+users := [][]any{
+    {1, "alice"},
+    {2, "bob"},
+    {3, "carol"},
+}
+// Bulk INSERT
+q.Add("INSERT INTO users (id, name) VALUES").Batch(users).Exec()
+// INSERT INTO users (id, name) VALUES (?,?), (?,?), (?,?)
+
+// PG multi-column IN
+q.Add("SELECT * FROM users WHERE (id, name) IN (").Batch(users).Add(")")
+// SELECT * FROM users WHERE (id, name) IN ((?,?), (?,?), (?,?))
+```
+
+---
+
+## Terminal Methods
+
+All terminal methods go through the middleware chain.
+
+- `Get(dest) (bool, error)` — single row; returns `(false, nil)` when not found
+- `List(dest) error` — multiple rows into a slice pointer
+- `Exec() (sql.Result, error)` — non-query statements
+- `Rows() (*sqlx.Rows, error)` — raw cursor for streaming
+- `ToSQL() (string, []any, error)` — debug, no execution
+
+---
+
+## Generic Utilities
+
+```go
+// Single scalar value
+count, _, err := sqlo.Scalar[int64](q.Add("SELECT COUNT(1) FROM users"))
+
+// Pagination — query must use Mark(sqlo.F, ...) for SELECT fields
+// sql.Select() has the `sqlo.F` mark implicitly, for simple queries
+items, total, err := sqlo.Page[User](q.Select("users", "age > ? order by age", 18), page, size)
+
+// complicate queries
+items, total, err := sqlo.Page[User](
+    q.Add("SELECT").Mark(sqlo.F, "u.*, o.count").
+        Add("FROM users u LEFT JOIN orders o ON u.id = o.user_id").
+        AddIf(name != "", "WHERE u.name = #{1}", name).
+        Add("ORDER BY u.id DESC"),
+    page, size,
+)
+```
+
+`Page` substitutes `F` with `COUNT(1)` for the total query, then adds `LIMIT/OFFSET` for data. Short-circuits when `total == 0`.
 
 ---
 
 ## Transaction Management
 
-Transactions are managed via closures to prevent connection leaks and eliminate manual rollback boilerplate.
+```go
+err := q.Transaction(func(tx *sqlo.Sqlo) error {
+    _, err := tx.Insert("users", User{Name: "alice"}).Exec()
+    if err != nil {
+        return err // triggers rollback
+    }
+    _, err = tx.Update("stats", map[string]any{"count": 1}, "id = #{1}", 1).Exec()
+    return err // nil triggers commit
+})
+```
 
-* **`Transaction(fn func(*StupidQL) error) error`**: Initiates a transaction and passes a `StupidQL` instance bound to the transaction object into the closure. If the closure returns an `error` or a `panic` occurs, the transaction is automatically rolled back; if successful, the transaction is committed.
+Panic inside the closure also triggers rollback. Nested `Begin` returns an error.
+
+---
+
+## Middleware
 
 ```go
-err := q.Transaction(func(tx *stupidql.StupidQL) error {
-    _, err := tx.Insert("users", User{Name: "Dave"}).Exec()
-    if err != nil {
-        return err // Triggers Rollback
-    }
+type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
+type Middleware func(next ExecFunc) ExecFunc
+```
 
-    _, err = tx.Update("stats", map[string]any{"count": 1}, "WHERE id = 1").Exec()
-    if err != nil {
-        return err // Triggers Rollback
+All terminal methods go through `Use`-registered middleware (onion model):
+
+```go
+q = q.Use(func(next sqlo.ExecFunc) sqlo.ExecFunc {
+    return func(ctx context.Context, query string, args []any) (any, error) {
+        start := time.Now()
+        result, err := next(ctx, query, args)
+        log.Printf("query took %s", time.Since(start))
+        return result, err
     }
-    
-    return nil // Triggers Commit
+})
+```
+
+Built-in `LogMiddleware` with slow query detection (not attached by default):
+
+```go
+q = q.Use(sqlo.LogMiddleware(slog.Default(), 200*time.Millisecond))
+```
+
+---
+
+## Generic DAO
+
+`Dao[T]` provides single-table CRUD with dialect-aware `Create`.
+
+```go
+type User struct {
+    ID   int    `db:"id,omitempty"`
+    Name string `db:"name"`
+}
+
+dao := sqlo.NewDao[User](q, "users")
+dao = dao.PrimaryKey("id") // default is "id", cloned
+dao = dao.TableName("users_1") // change table name, for table partitions, cloned 
+
+// Create returns the generated PK
+id, err := dao.Create(User{Name: "alice"})
+
+// Get returns *T — nil when not found, no error
+user, err := dao.GetByID(id)
+user, err  = dao.Get("name = #{1}", "alice")
+
+// Update/Delete return affected rows
+affected, err := dao.Update(map[string]any{"name": "bob"}, "id = #{1}", id)
+affected, err  = dao.Delete("id = #{1}", id)
+
+// CreateRaw returns *Sqlo for chaining (e.g. add RETURNING, ON CONFLICT)
+dao.CreateRaw(user).Add("ON CONFLICT DO NOTHING").Exec()
+
+// Queries
+items, err  := dao.List("val > #{1}", 10)
+items, err   = dao.All()
+count, err  := dao.Count("val > #{1}", 10)
+exists, err := dao.Exists("name = #{1}", "alice")
+
+// Access underlying Sqlo for custom queries
+sum, _, err := sqlo.Scalar[int64](dao.Q().Add("SELECT SUM(val) FROM users"))
+```
+
+### Cross-DAO transactions
+
+```go
+err = q.Transaction(func(tx *sqlo.Sqlo) error {
+    userID, err := userDao.WithTx(tx).Create(User{Name: "alice"})
+    if err != nil {
+        return err
+    }
+    _, err = orderDao.WithTx(tx).Create(Order{UserID: int(userID), Product: "widget"})
+    return err
 })
 ```

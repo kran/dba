@@ -1,4 +1,4 @@
-module codeberg.org/kran/stupidql
+module codeberg.org/kran/sqlo
 
 go 1.25.7
 

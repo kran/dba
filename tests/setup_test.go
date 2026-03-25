@@ -1,9 +1,9 @@
-package stupidql_test
+package sqlo_test
 
 import (
+	"codeberg.org/kran/sqlo"
 	"testing"
 
-	"codeberg.org/kran/stupidql"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
@@ -18,8 +18,8 @@ func newDB(t *testing.T) *sqlx.DB {
 	return db
 }
 
-func newQ(t *testing.T) (*stupidql.StupidQL, *sqlx.DB) {
+func newQ(t *testing.T) (*sqlo.Sqlo, *sqlx.DB) {
 	t.Helper()
 	db := newDB(t)
-	return stupidql.NewStupidQL(db), db
+	return sqlo.New(db), db
 }

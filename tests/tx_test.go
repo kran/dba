@@ -1,13 +1,12 @@
-package stupidql_test
+package sqlo_test
 
 import (
+	"codeberg.org/kran/sqlo"
 	"errors"
 	"testing"
-
-	"codeberg.org/kran/stupidql"
 )
 
-func setupItemsTable(t *testing.T, q *stupidql.StupidQL) {
+func setupItemsTable(t *testing.T, q *sqlo.Sqlo) {
 	t.Helper()
 	_, err := q.Add("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)").Exec()
 	if err != nil {
@@ -15,7 +14,7 @@ func setupItemsTable(t *testing.T, q *stupidql.StupidQL) {
 	}
 }
 
-func countItems(t *testing.T, q *stupidql.StupidQL) int {
+func countItems(t *testing.T, q *sqlo.Sqlo) int {
 	t.Helper()
 	var n int
 	if _, err := q.Add("SELECT COUNT(*) FROM items").Get(&n); err != nil {
@@ -28,7 +27,7 @@ func TestTransaction_Commit(t *testing.T) {
 	q, _ := newQ(t)
 	setupItemsTable(t, q)
 
-	err := q.Transaction(func(tx *stupidql.StupidQL) error {
+	err := q.Transaction(func(tx *sqlo.Sqlo) error {
 		_, err := tx.Insert("items", map[string]any{"id": 1, "val": "hello"}).Exec()
 		return err
 	})
@@ -45,7 +44,7 @@ func TestTransaction_RollbackOnError(t *testing.T) {
 	q, _ := newQ(t)
 	setupItemsTable(t, q)
 
-	err := q.Transaction(func(tx *stupidql.StupidQL) error {
+	err := q.Transaction(func(tx *sqlo.Sqlo) error {
 		if _, err := tx.Insert("items", map[string]any{"id": 1, "val": "hello"}).Exec(); err != nil {
 			return err
 		}
@@ -66,7 +65,7 @@ func TestTransaction_RollbackOnPanic(t *testing.T) {
 
 	func() {
 		defer func() { recover() }()
-		_ = q.Transaction(func(tx *stupidql.StupidQL) error {
+		_ = q.Transaction(func(tx *sqlo.Sqlo) error {
 			tx.Insert("items", map[string]any{"id": 1, "val": "hello"}).Exec() //nolint
 			panic("test panic")
 		})
@@ -81,7 +80,7 @@ func TestTransaction_NestedBeginFails(t *testing.T) {
 	q, _ := newQ(t)
 	setupItemsTable(t, q)
 
-	err := q.Transaction(func(tx *stupidql.StupidQL) error {
+	err := q.Transaction(func(tx *sqlo.Sqlo) error {
 		_, err := tx.Begin()
 		if err == nil {
 			t.Error("expected error on nested Begin")

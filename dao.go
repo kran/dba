@@ -1,7 +1,7 @@
-package stupidql
+package sqlo
 
 // execRowsAffected 执行并返回影响行数
-func execRowsAffected(q *StupidQL) (int64, error) {
+func execRowsAffected(q *Sqlo) (int64, error) {
 	result, err := q.Exec()
 	if err != nil {
 		return 0, err
@@ -11,7 +11,7 @@ func execRowsAffected(q *StupidQL) (int64, error) {
 
 // Dao 泛型 DAO，提供基础 CRUD 操作
 type Dao[T any] struct {
-	q         *StupidQL
+	q         *Sqlo
 	table     string
 	quotedTbl string // 预计算的转义表名
 	pk        string // 主键列名
@@ -19,7 +19,7 @@ type Dao[T any] struct {
 }
 
 // NewDao 创建一个绑定到指定数据源和表的 DAO，主键默认为 "id"
-func NewDao[T any](q *StupidQL, table string) *Dao[T] {
+func NewDao[T any](q *Sqlo, table string) *Dao[T] {
 	return &Dao[T]{
 		q:         q,
 		table:     table,
@@ -55,14 +55,14 @@ func (d *Dao[T]) TableName(table string) *Dao[T] {
 }
 
 // WithTx 返回一个使用事务连接的 DAO 副本
-func (d *Dao[T]) WithTx(tx *StupidQL) *Dao[T] {
+func (d *Dao[T]) WithTx(tx *Sqlo) *Dao[T] {
 	clone := d.copy()
 	clone.q = tx
 	return clone
 }
 
-// Q 返回底层 StupidQL，用于自定义查询
-func (d *Dao[T]) Q() *StupidQL {
+// Q 返回底层 Sqlo，用于自定义查询
+func (d *Dao[T]) Q() *Sqlo {
 	return d.q
 }
 
@@ -84,8 +84,8 @@ func (d *Dao[T]) Create(data T) (int64, error) {
 	return result.LastInsertId()
 }
 
-// CreateRaw 插入单条记录，返回 *StupidQL 供用户继续链式操作
-func (d *Dao[T]) CreateRaw(data T) *StupidQL {
+// CreateRaw 插入单条记录，返回 *Sqlo 供用户继续链式操作
+func (d *Dao[T]) CreateRaw(data T) *Sqlo {
 	return d.q.Insert(d.table, data)
 }
 

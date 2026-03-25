@@ -1,10 +1,9 @@
-package stupidql_test
+package sqlo_test
 
 import (
+	"codeberg.org/kran/sqlo"
 	"errors"
 	"testing"
-
-	"codeberg.org/kran/stupidql"
 )
 
 type Item struct {
@@ -13,7 +12,7 @@ type Item struct {
 	Val  int    `db:"val"`
 }
 
-func setupDao(t *testing.T) (*stupidql.Dao[Item], *stupidql.StupidQL) {
+func setupDao(t *testing.T) (*sqlo.Dao[Item], *sqlo.Sqlo) {
 	t.Helper()
 	q, db := newQ(t)
 	_, err := db.Exec(`CREATE TABLE items (
@@ -24,7 +23,7 @@ func setupDao(t *testing.T) (*stupidql.Dao[Item], *stupidql.StupidQL) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return stupidql.NewDao[Item](q, "items"), q
+	return sqlo.NewDao[Item](q, "items"), q
 }
 
 func TestDao_Create(t *testing.T) {
@@ -214,7 +213,7 @@ func TestDao_Exists(t *testing.T) {
 func TestDao_WithTx_Commit(t *testing.T) {
 	dao, q := setupDao(t)
 
-	err := q.Transaction(func(tx *stupidql.StupidQL) error {
+	err := q.Transaction(func(tx *sqlo.Sqlo) error {
 		txDao := dao.WithTx(tx)
 		if _, err := txDao.Create(Item{Name: "a", Val: 1}); err != nil {
 			return err
@@ -239,7 +238,7 @@ func TestDao_WithTx_Rollback(t *testing.T) {
 
 	dao.Create(Item{Name: "existing", Val: 0})
 
-	_ = q.Transaction(func(tx *stupidql.StupidQL) error {
+	_ = q.Transaction(func(tx *sqlo.Sqlo) error {
 		txDao := dao.WithTx(tx)
 		txDao.Create(Item{Name: "will_rollback", Val: 99})
 		return errors.New("fail")
@@ -266,10 +265,10 @@ func TestDao_CrossDao_Transaction(t *testing.T) {
 		Product string `db:"product"`
 	}
 
-	userDao := stupidql.NewDao[User2](q, "users2")
-	orderDao := stupidql.NewDao[Order2](q, "orders2")
+	userDao := sqlo.NewDao[User2](q, "users2")
+	orderDao := sqlo.NewDao[Order2](q, "orders2")
 
-	err := q.Transaction(func(tx *stupidql.StupidQL) error {
+	err := q.Transaction(func(tx *sqlo.Sqlo) error {
 		userID, err := userDao.WithTx(tx).Create(User2{Name: "alice"})
 		if err != nil {
 			return err
@@ -298,7 +297,7 @@ func TestDao_CustomPrimaryKey(t *testing.T) {
 		Val string `db:"val"`
 	}
 
-	dao := stupidql.NewDao[Config](q, "configs").PrimaryKey("key")
+	dao := sqlo.NewDao[Config](q, "configs").PrimaryKey("key")
 
 	// CustomPK 非 int64，用 CreateRaw 代替
 	dao.CreateRaw(Config{Key: "theme", Val: "dark"}).Exec()
@@ -332,7 +331,7 @@ func TestDao_Q_CustomQuery(t *testing.T) {
 	dao.Create(Item{Name: "b", Val: 20})
 
 	// 使用 Q() 构建自定义查询
-	sum, _, err := stupidql.Scalar[int64](dao.Q().Add("SELECT SUM(val) FROM items"))
+	sum, _, err := sqlo.Scalar[int64](dao.Q().Add("SELECT SUM(val) FROM items"))
 	if err != nil {
 		t.Fatal(err)
 	}

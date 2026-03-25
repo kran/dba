@@ -1,9 +1,8 @@
-package stupidql_test
+package sqlo_test
 
 import (
+	"codeberg.org/kran/sqlo"
 	"testing"
-
-	"codeberg.org/kran/stupidql"
 )
 
 type PageItem struct {
@@ -12,7 +11,7 @@ type PageItem struct {
 	Cat string `db:"cat"`
 }
 
-func setupPageTable(t *testing.T) *stupidql.StupidQL {
+func setupPageTable(t *testing.T) *sqlo.Sqlo {
 	t.Helper()
 	q, db := newQ(t)
 	db.Exec(`CREATE TABLE page_items (id INTEGER PRIMARY KEY AUTOINCREMENT, val INTEGER, cat TEXT)`)
@@ -29,8 +28,8 @@ func setupPageTable(t *testing.T) *stupidql.StupidQL {
 func TestPage_Basic(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(stupidql.F, "*").Add("FROM page_items").Add("ORDER BY id")
-	items, total, err := stupidql.Page[PageItem](query, 1, 10)
+	query := q.Add("SELECT").Mark(sqlo.F, "*").Add("FROM page_items").Add("ORDER BY id")
+	items, total, err := sqlo.Page[PageItem](query, 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +47,8 @@ func TestPage_Basic(t *testing.T) {
 func TestPage_SecondPage(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(stupidql.F, "*").Add("FROM page_items").Add("ORDER BY id")
-	items, total, err := stupidql.Page[PageItem](query, 2, 10)
+	query := q.Add("SELECT").Mark(sqlo.F, "*").Add("FROM page_items").Add("ORDER BY id")
+	items, total, err := sqlo.Page[PageItem](query, 2, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +66,8 @@ func TestPage_SecondPage(t *testing.T) {
 func TestPage_LastPage(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(stupidql.F, "*").Add("FROM page_items").Add("ORDER BY id")
-	items, total, err := stupidql.Page[PageItem](query, 3, 10)
+	query := q.Add("SELECT").Mark(sqlo.F, "*").Add("FROM page_items").Add("ORDER BY id")
+	items, total, err := sqlo.Page[PageItem](query, 3, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,10 +82,10 @@ func TestPage_LastPage(t *testing.T) {
 func TestPage_WithWhere(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(stupidql.F, "*").
+	query := q.Add("SELECT").Mark(sqlo.F, "*").
 		Add("FROM page_items WHERE cat = #{1}", "a").
 		Add("ORDER BY id")
-	items, total, err := stupidql.Page[PageItem](query, 1, 10)
+	items, total, err := sqlo.Page[PageItem](query, 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,12 +113,12 @@ func TestPage_WithJoin(t *testing.T) {
 		Author string `db:"author"`
 	}
 
-	query := q.Add("SELECT").Mark(stupidql.F, "b.id, b.title, a.name AS author").
+	query := q.Add("SELECT").Mark(sqlo.F, "b.id, b.title, a.name AS author").
 		Add("FROM books b JOIN authors a ON b.author_id = a.id").
 		Add("WHERE a.name = #{1}", "alice").
 		Add("ORDER BY b.id")
 
-	items, total, err := stupidql.Page[BookRow](query, 2, 5)
+	items, total, err := sqlo.Page[BookRow](query, 2, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,10 +136,10 @@ func TestPage_WithJoin(t *testing.T) {
 func TestPage_InvalidParams(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(stupidql.F, "*").Add("FROM page_items").Add("ORDER BY id")
+	query := q.Add("SELECT").Mark(sqlo.F, "*").Add("FROM page_items").Add("ORDER BY id")
 
 	// page < 1 应当回退到第 1 页
-	items, total, err := stupidql.Page[PageItem](query, 0, 10)
+	items, total, err := sqlo.Page[PageItem](query, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +151,7 @@ func TestPage_InvalidParams(t *testing.T) {
 	}
 
 	// size < 1 应当回退到 10
-	items2, _, err := stupidql.Page[PageItem](query, 1, -1)
+	items2, _, err := sqlo.Page[PageItem](query, 1, -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,10 +163,10 @@ func TestPage_InvalidParams(t *testing.T) {
 func TestPage_EmptyResult(t *testing.T) {
 	q := setupPageTable(t)
 
-	query := q.Add("SELECT").Mark(stupidql.F, "*").
+	query := q.Add("SELECT").Mark(sqlo.F, "*").
 		Add("FROM page_items WHERE cat = #{1}", "nonexistent").
 		Add("ORDER BY id")
-	items, total, err := stupidql.Page[PageItem](query, 1, 10)
+	items, total, err := sqlo.Page[PageItem](query, 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

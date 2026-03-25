@@ -1,4 +1,4 @@
-package stupidql
+package sqlo
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package stupidql_test
+package sqlo_test
 
 import (
 	"testing"
