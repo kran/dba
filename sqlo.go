@@ -66,6 +66,7 @@ type Sqlo struct {
 	format      PlaceholderFormat
 	driverName  string
 	middlewares []Middleware
+	copyId      int
 }
 
 // New 包装现有的 sqlx.DB
@@ -91,6 +92,7 @@ func New(db *sqlx.DB) *Sqlo {
 		quoter:     quoter,
 		format:     format,
 		driverName: driver,
+		copyId:     0,
 	}
 }
 
@@ -106,6 +108,7 @@ func (d *Sqlo) copy() *Sqlo {
 		quoter:     d.quoter,
 		format:     d.format,
 		driverName: d.driverName,
+		copyId:     d.copyId + 1,
 	}
 	copy(clone.mainNodes, d.mainNodes)
 	for k, v := range d.varNodes {
@@ -535,12 +538,13 @@ func (d *Sqlo) Insert(table string, data any) *Sqlo {
 	quotedCols := make([]string, len(cols))
 	placeholders := make([]string, len(cols))
 	var bindArgs []any
+	prefix := d.copyId
 	result := d
 
 	for i, c := range cols {
 		quotedCols[i] = d.quoter(c)
 		if expr, ok := vals[i].(Expr); ok {
-			varName := fmt.Sprintf("__expr_%d", i)
+			varName := fmt.Sprintf("__expr_%d_%d", prefix, i)
 			placeholders[i] = "${" + varName + "}"
 			result = result.Var(varName, expr.SQL, expr.Args...)
 		} else {
@@ -566,11 +570,12 @@ func (d *Sqlo) Update(table string, data any, where string, args ...any) *Sqlo {
 	}
 	setClauses := make([]string, len(cols))
 	var bindArgs []any
+	prefix := d.copyId
 	result := d
 
 	for i, c := range cols {
 		if expr, ok := vals[i].(Expr); ok {
-			varName := fmt.Sprintf("__expr_%d", i)
+			varName := fmt.Sprintf("__expr_%d_%d", prefix, i)
 			setClauses[i] = d.quoter(c) + "=${" + varName + "}"
 			result = result.Var(varName, expr.SQL, expr.Args...)
 		} else {
