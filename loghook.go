@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// LogMiddleware 返回一个日志中间件，记录每次 SQL 执行的耗时、查询和参数
+// LogHook 返回一个日志中间件，记录每次 SQL 执行的耗时、查询和参数
 // slowThreshold > 0 时，超过阈值的查询会以 Warn 级别记录
-func LogMiddleware(logger *slog.Logger, slowThreshold time.Duration) Middleware {
+func LogHook(logger *slog.Logger, slowThreshold time.Duration) Hook {
 	if logger == nil {
 		logger = slog.Default()
 	}

@@ -32,8 +32,8 @@ func NewExpr(sql string, args ...any) Expr {
 	return Expr{SQL: sql, Args: args}
 }
 
-// Middleware 中间件类型，洋葱模型
-type Middleware func(next ExecFunc) ExecFunc
+// Hook 中间件类型，洋葱模型
+type Hook func(next ExecFunc) ExecFunc
 type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
 
 // PlaceholderFormat 用于多库兼容 (PG的 $1, MySQL的 ?)
@@ -58,15 +58,15 @@ type Sqlo struct {
 	mainNodes []node          // 主干节点
 	varNodes  map[string]node // 宏变量节点 (由 Var 注册)
 
-	db          sqlx.ExtContext
-	rawDB       *sqlx.DB
-	ctx         context.Context
-	err         error
-	quoter      Quoter
-	format      PlaceholderFormat
-	driverName  string
-	middlewares []Middleware
-	copyId      int
+	db         sqlx.ExtContext
+	rawDB      *sqlx.DB
+	ctx        context.Context
+	err        error
+	quoter     Quoter
+	format     PlaceholderFormat
+	driverName string
+	hooks      []Hook
+	copyId     int
 }
 
 // New 包装现有的 sqlx.DB
@@ -114,9 +114,9 @@ func (d *Sqlo) copy() *Sqlo {
 	for k, v := range d.varNodes {
 		clone.varNodes[k] = v
 	}
-	if len(d.middlewares) > 0 {
-		clone.middlewares = make([]Middleware, len(d.middlewares))
-		copy(clone.middlewares, d.middlewares)
+	if len(d.hooks) > 0 {
+		clone.hooks = make([]Hook, len(d.hooks))
+		copy(clone.hooks, d.hooks)
 	}
 	return clone
 }
@@ -158,9 +158,9 @@ func (d *Sqlo) Unsafe() *Sqlo {
 }
 
 // Use 添加中间件，返回新实例
-func (d *Sqlo) Use(mw ...Middleware) *Sqlo {
+func (d *Sqlo) Use(mw ...Hook) *Sqlo {
 	clone := d.copy()
-	clone.middlewares = append(clone.middlewares, mw...)
+	clone.hooks = append(clone.hooks, mw...)
 	return clone
 }
 
@@ -171,8 +171,8 @@ func (d *Sqlo) execute(fn ExecFunc) (any, error) {
 		return nil, err
 	}
 	exec := fn
-	for i := len(d.middlewares) - 1; i >= 0; i-- {
-		exec = d.middlewares[i](exec)
+	for i := len(d.hooks) - 1; i >= 0; i-- {
+		exec = d.hooks[i](exec)
 	}
 	return exec(d.ctx, query, args)
 }

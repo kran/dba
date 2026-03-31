@@ -200,7 +200,7 @@ func TestLogMiddleware_Debug(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	logged := q.Use(sqlo.LogMiddleware(logger, 0))
+	logged := q.Use(sqlo.LogHook(logger, 0))
 	count, _, err := sqlo.Scalar[int](logged.Add("SELECT COUNT(1) FROM log_test"))
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func TestLogMiddleware_SlowQuery(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// 1ns 阈值，任何查询都算慢
-	logged := q.Use(sqlo.LogMiddleware(logger, 1*time.Nanosecond))
+	logged := q.Use(sqlo.LogHook(logger, 1*time.Nanosecond))
 	logged.Add("SELECT 1").Get(new(int))
 
 	output := buf.String()
@@ -247,7 +247,7 @@ func TestLogMiddleware_Error(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	logged := q.Use(sqlo.LogMiddleware(logger, 0))
+	logged := q.Use(sqlo.LogHook(logger, 0))
 	// 查询不存在的表，触发错误
 	logged.Add("SELECT 1 FROM nonexistent_table").Get(new(int))
 
