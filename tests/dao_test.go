@@ -333,7 +333,7 @@ type HookItem struct {
 	Val  int    `db:"val"`
 }
 
-func (h *HookItem) SqloBeforeCreate() error {
+func (h *HookItem) BeforeCreate() error {
 	if h.Name == "" {
 		return errors.New("name is required")
 	}
@@ -341,7 +341,7 @@ func (h *HookItem) SqloBeforeCreate() error {
 	return nil
 }
 
-func (h *HookItem) SqloBeforeUpdate() error {
+func (h *HookItem) BeforeUpdate() error {
 	if h.Val < 0 {
 		return errors.New("val must be non-negative")
 	}

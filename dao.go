@@ -1,5 +1,10 @@
 package sqlo
 
+import (
+	"errors"
+	"fmt"
+)
+
 // execRowsAffected 执行并返回影响行数
 func execRowsAffected(q *Sqlo) (int64, error) {
 	result, err := q.Exec()
@@ -10,11 +15,11 @@ func execRowsAffected(q *Sqlo) (int64, error) {
 }
 
 type SqloBeforeCreate interface {
-	SqloBeforeCreate() error
+	BeforeCreate() error
 }
 
 type SqloBeforeUpdate interface {
-	SqloBeforeUpdate() error
+	BeforeUpdate() error
 }
 
 // Dao 泛型 DAO，提供基础 CRUD 操作
@@ -80,7 +85,7 @@ func (d *Dao[T]) Q() *Sqlo {
 func (d *Dao[T]) Create(data any) (int64, error) {
 	if p := d.resolve(data); p != nil {
 		if h, ok := any(p).(SqloBeforeCreate); ok {
-			if err := h.SqloBeforeCreate(); err != nil {
+			if err := h.BeforeCreate(); err != nil {
 				return 0, err
 			}
 		}
@@ -105,7 +110,7 @@ func (d *Dao[T]) Create(data any) (int64, error) {
 func (d *Dao[T]) CreateRaw(data any) *Sqlo {
 	if p := d.resolve(data); p != nil {
 		if h, ok := any(p).(SqloBeforeCreate); ok {
-			if err := h.SqloBeforeCreate(); err != nil {
+			if err := h.BeforeCreate(); err != nil {
 				clone := d.q.copy()
 				clone.err = err
 				return clone
@@ -116,11 +121,40 @@ func (d *Dao[T]) CreateRaw(data any) *Sqlo {
 	return d.q.Insert(d.table, data)
 }
 
+// BatchRaw 批量插入多条记录，返回 *Sqlo 供用户继续链式操作（如 ON CONFLICT）
+func (d *Dao[T]) BatchRaw(entities []T) *Sqlo {
+	if len(entities) == 0 {
+		clone := d.q.copy()
+		clone.err = errors.New("dao batch create: empty entities")
+		return clone
+	}
+
+	// 处理钩子并收集实体
+	processed := make([]any, len(entities))
+	for i := range entities {
+		if h, ok := any(&entities[i]).(SqloBeforeCreate); ok {
+			if err := h.BeforeCreate(); err != nil {
+				clone := d.q.copy()
+				clone.err = fmt.Errorf("dao batch create: entity %d hook error: %w", i, err)
+				return clone
+			}
+		}
+		processed[i] = entities[i]
+	}
+
+	return d.q.BatchInsert(d.table, processed)
+}
+
+// Batch 批量插入多条记录，返回影响行数
+func (d *Dao[T]) Batch(entities []T) (int64, error) {
+	return execRowsAffected(d.BatchRaw(entities))
+}
+
 // Update 根据条件更新记录，返回影响行数
 func (d *Dao[T]) Update(data any, where string, args ...any) (int64, error) {
 	if p := d.resolve(data); p != nil {
 		if h, ok := any(p).(SqloBeforeUpdate); ok {
-			if err := h.SqloBeforeUpdate(); err != nil {
+			if err := h.BeforeUpdate(); err != nil {
 				return 0, err
 			}
 		}

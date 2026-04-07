@@ -39,8 +39,8 @@ type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
 // PlaceholderFormat 用于多库兼容 (PG的 $1, MySQL的 ?)
 type PlaceholderFormat func(idx int) string
 
-func QuestionMarkFormat(_ int) string { return "?" }
-func DollarFormat(idx int) string     { return "$" + strconv.Itoa(idx) }
+func QmarkFormat(_ int) string    { return "?" }
+func DollarFormat(idx int) string { return "$" + strconv.Itoa(idx) }
 
 // Quoter 用于 @{} 宏的标识符安全转义 (比如把 user 转为 `user` 或 "user")
 type Quoter func(string) string
@@ -73,14 +73,14 @@ type Sqlo struct {
 func New(db *sqlx.DB) *Sqlo {
 	driver := db.DriverName()
 	quoter := AnsiQuoter
-	format := QuestionMarkFormat
+	format := QmarkFormat
 
 	if driver == "postgres" || driver == "pgx" || driver == "pq" {
 		quoter = AnsiQuoter
 		format = DollarFormat
 	} else if driver == "mysql" {
 		quoter = MySQLQuoter
-		format = QuestionMarkFormat
+		format = QmarkFormat
 	}
 
 	return &Sqlo{
@@ -387,7 +387,7 @@ func extractNamedArg(src any, name string) (any, error) {
 	return nil, fmt.Errorf("sqlo: named args source must be struct or map")
 }
 
-// Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT
+// Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT，支持 Expr
 func (d *Sqlo) Batch(rows [][]any) *Sqlo {
 	if len(rows) == 0 {
 		clone := d.copy()
@@ -402,9 +402,10 @@ func (d *Sqlo) Batch(rows [][]any) *Sqlo {
 		return clone
 	}
 
+	result := d // 累积 Var 节点
 	var builder strings.Builder
 	builder.Grow(len(rows) * width * 8)
-	args := make([]any, 0, len(rows)*width)
+	var bindArgs []any
 	argIdx := 1
 
 	for i, row := range rows {
@@ -423,14 +424,69 @@ func (d *Sqlo) Batch(rows [][]any) *Sqlo {
 			if j > 0 {
 				builder.WriteString(", ")
 			}
-			builder.WriteString(fmt.Sprintf("#{%d}", argIdx))
-			args = append(args, val)
-			argIdx++
+
+			if expr, ok := val.(Expr); ok {
+				// 为 Expr 创建变量节点
+				varName := fmt.Sprintf("__batch_expr_%d_%d_%d", d.copyId, i, j)
+				result = result.Var(varName, expr.SQL, expr.Args...)
+				builder.WriteString("${" + varName + "}")
+			} else {
+				// 普通绑定参数
+				builder.WriteString(fmt.Sprintf("#{%d}", argIdx))
+				bindArgs = append(bindArgs, val)
+				argIdx++
+			}
 		}
 		builder.WriteString(")")
 	}
 
-	return d.Add(builder.String(), args...)
+	return result.Add(builder.String(), bindArgs...)
+}
+
+// BatchInsert 批量插入多条记录，自动从实体列表构建完整 INSERT 语句
+// 所有实体必须具有相同的列结构
+func (d *Sqlo) BatchInsert(table string, entities []any) *Sqlo {
+	if len(entities) == 0 {
+		clone := d.copy()
+		clone.err = errors.New("batch insert: empty entities")
+		return clone
+	}
+
+	// 从第一个实体提取列
+	cols, _, err := ExtractColsVals(entities[0])
+	if err != nil || len(cols) == 0 {
+		clone := d.copy()
+		clone.err = fmt.Errorf("batch insert: %w", err)
+		return clone
+	}
+
+	// 验证所有实体列结构一致并构建 rows
+	rows := make([][]any, len(entities))
+	for i, entity := range entities {
+		m := ToMap(entity)
+		row := make([]any, len(cols))
+		for j, col := range cols {
+			if val, ok := m[col]; !ok {
+				clone := d.copy()
+				clone.err = fmt.Errorf("batch insert: entity %d missing column %s", i, col)
+				return clone
+			} else {
+				row[j] = val
+			}
+		}
+		rows[i] = row
+	}
+
+	// 构建完整 INSERT 头部
+	quotedCols := make([]string, len(cols))
+	for i, col := range cols {
+		quotedCols[i] = d.quoter(col)
+	}
+
+	insertHead := fmt.Sprintf("INSERT ${%s:} INTO %s (%s) VALUES",
+		I, d.quoter(table), strings.Join(quotedCols, ", "))
+
+	return d.Add(insertHead).Batch(rows)
 }
 
 // List 映射多行到 Slice，dest 可以是 *[]SomeStruct 或 *[]map[string]any
