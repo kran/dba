@@ -2,6 +2,8 @@ package sqlo
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -30,8 +32,12 @@ func LogHook(logger *slog.Logger, slowThreshold time.Duration) Hook {
 			}
 
 			if err != nil {
+				level := slog.LevelError
+				if errors.Is(err, sql.ErrNoRows) {
+					level = slog.LevelDebug
+				}
 				attrs = append(attrs, slog.String("error", err.Error()))
-				logger.LogAttrs(ctx, slog.LevelError, "SQL", attrs...)
+				logger.LogAttrs(ctx, level, "SQL", attrs...)
 			} else if slowThreshold > 0 && duration >= slowThreshold {
 				logger.LogAttrs(ctx, slog.LevelWarn, "SLOW SQL", attrs...)
 			} else {
