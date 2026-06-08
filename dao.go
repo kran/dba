@@ -14,11 +14,11 @@ func execRowsAffected(q *SQL) (int64, error) {
 	return result.RowsAffected()
 }
 
-type SqloBeforeCreate interface {
+type BeforeCreate interface {
 	BeforeCreate() error
 }
 
-type SqloBeforeUpdate interface {
+type BeforeUpdate interface {
 	BeforeUpdate() error
 }
 
@@ -84,7 +84,7 @@ func (d *Dao[T]) Q() *SQL {
 // 其它: INSERT → LastInsertId
 func (d *Dao[T]) Create(data any) (int64, error) {
 	if p := d.resolve(data); p != nil {
-		if h, ok := any(p).(SqloBeforeCreate); ok {
+		if h, ok := any(p).(BeforeCreate); ok {
 			if err := h.BeforeCreate(); err != nil {
 				return 0, err
 			}
@@ -109,7 +109,7 @@ func (d *Dao[T]) Create(data any) (int64, error) {
 // CreateRaw 插入单条记录，返回 *SQL 供用户继续链式操作
 func (d *Dao[T]) CreateRaw(data any) *SQL {
 	if p := d.resolve(data); p != nil {
-		if h, ok := any(p).(SqloBeforeCreate); ok {
+		if h, ok := any(p).(BeforeCreate); ok {
 			if err := h.BeforeCreate(); err != nil {
 				clone := d.q.copy()
 				clone.err = err
@@ -132,7 +132,7 @@ func (d *Dao[T]) BatchRaw(entities []T) *SQL {
 	// 处理钩子并收集实体
 	processed := make([]any, len(entities))
 	for i := range entities {
-		if h, ok := any(&entities[i]).(SqloBeforeCreate); ok {
+		if h, ok := any(&entities[i]).(BeforeCreate); ok {
 			if err := h.BeforeCreate(); err != nil {
 				clone := d.q.copy()
 				clone.err = fmt.Errorf("dao batch create: entity %d hook error: %w", i, err)
@@ -153,7 +153,7 @@ func (d *Dao[T]) Batch(entities []T) (int64, error) {
 // Update 根据条件更新记录，返回影响行数
 func (d *Dao[T]) Update(data any, where string, args ...any) (int64, error) {
 	if p := d.resolve(data); p != nil {
-		if h, ok := any(p).(SqloBeforeUpdate); ok {
+		if h, ok := any(p).(BeforeUpdate); ok {
 			if err := h.BeforeUpdate(); err != nil {
 				return 0, err
 			}
