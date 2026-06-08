@@ -5,12 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/jmoiron/sqlx"
 	"github.com/jmoiron/sqlx/reflectx"
 	"reflect"
 	"strconv"
 	"strings"
-
-	"github.com/jmoiron/sqlx"
 )
 
 const (
@@ -527,6 +526,8 @@ func (d *SQL) Get(dest any) (found bool, err error) {
 			}
 			return false, nil
 		}
+
+		*m = make(map[string]any)
 
 		if err := rows.MapScan(*m); err != nil {
 			return false, err
