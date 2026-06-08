@@ -1,4 +1,4 @@
-package sqlo
+package dba
 
 import (
 	"context"
@@ -24,12 +24,12 @@ var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
 
 // Expr 表示一个原始 SQL 表达式，用于 Insert/Update 中需要非绑定值的场景
 type Expr struct {
-	SQL  string
+	Sql  string
 	Args []any
 }
 
 func NewExpr(sql string, args ...any) Expr {
-	return Expr{SQL: sql, Args: args}
+	return Expr{Sql: sql, Args: args}
 }
 
 // Hook 中间件类型，洋葱模型
@@ -53,8 +53,8 @@ type node struct {
 	args   []any
 }
 
-// Sqlo the builder
-type Sqlo struct {
+// SQL the builder
+type SQL struct {
 	mainNodes []node          // 主干节点
 	varNodes  map[string]node // 宏变量节点 (由 Var 注册)
 
@@ -70,7 +70,7 @@ type Sqlo struct {
 }
 
 // New 包装现有的 sqlx.DB
-func New(db *sqlx.DB) *Sqlo {
+func New(db *sqlx.DB) *SQL {
 	driver := db.DriverName()
 	quoter := AnsiQuoter
 	format := QmarkFormat
@@ -83,7 +83,7 @@ func New(db *sqlx.DB) *Sqlo {
 		format = QmarkFormat
 	}
 
-	return &Sqlo{
+	return &SQL{
 		mainNodes:  make([]node, 0),
 		varNodes:   make(map[string]node),
 		db:         db,
@@ -97,8 +97,8 @@ func New(db *sqlx.DB) *Sqlo {
 }
 
 // copy 实现不可变模式 (Immutable)
-func (d *Sqlo) copy() *Sqlo {
-	clone := &Sqlo{
+func (d *SQL) copy() *SQL {
+	clone := &SQL{
 		mainNodes:  make([]node, len(d.mainNodes)),
 		varNodes:   make(map[string]node),
 		db:         d.db,
@@ -122,28 +122,28 @@ func (d *Sqlo) copy() *Sqlo {
 }
 
 // WithContext 设置上下文
-func (d *Sqlo) WithContext(ctx context.Context) *Sqlo {
+func (d *SQL) WithContext(ctx context.Context) *SQL {
 	clone := d.copy()
 	clone.ctx = ctx
 	return clone
 }
 
 // Quoter change quoter
-func (d *Sqlo) Quoter(quoter Quoter) *Sqlo {
+func (d *SQL) Quoter(quoter Quoter) *SQL {
 	clone := d.copy()
 	clone.quoter = quoter
 	return clone
 }
 
 // Format change placeholder format
-func (d *Sqlo) Format(formatter PlaceholderFormat) *Sqlo {
+func (d *SQL) Format(formatter PlaceholderFormat) *SQL {
 	clone := d.copy()
 	clone.format = formatter
 	return clone
 }
 
-// Unsafe 返回一个忽略未映射列的 Sqlo（不报 "missing destination" 错误）
-func (d *Sqlo) Unsafe() *Sqlo {
+// Unsafe 返回一个忽略未映射列的 SQL（不报 "missing destination" 错误）
+func (d *SQL) Unsafe() *SQL {
 	clone := d.copy()
 	switch v := d.db.(type) {
 	case *sqlx.DB:
@@ -158,14 +158,14 @@ func (d *Sqlo) Unsafe() *Sqlo {
 }
 
 // Use 添加中间件，返回新实例
-func (d *Sqlo) Use(mw ...Hook) *Sqlo {
+func (d *SQL) Use(mw ...Hook) *SQL {
 	clone := d.copy()
 	clone.hooks = append(clone.hooks, mw...)
 	return clone
 }
 
 // execute 构建 SQL 并通过中间件链执行
-func (d *Sqlo) execute(fn ExecFunc) (any, error) {
+func (d *SQL) execute(fn ExecFunc) (any, error) {
 	query, args, err := d.build()
 	if err != nil {
 		return nil, err
@@ -178,7 +178,7 @@ func (d *Sqlo) execute(fn ExecFunc) (any, error) {
 }
 
 // Add 核心方法：添加 SQL 片段并解析宏
-func (d *Sqlo) Add(query string, args ...any) *Sqlo {
+func (d *SQL) Add(query string, args ...any) *SQL {
 	clone := d.copy()
 	if clone.err != nil {
 		return clone
@@ -188,7 +188,7 @@ func (d *Sqlo) Add(query string, args ...any) *Sqlo {
 }
 
 // AddIf 条件拼接
-func (d *Sqlo) AddIf(cond bool, query string, args ...any) *Sqlo {
+func (d *SQL) AddIf(cond bool, query string, args ...any) *SQL {
 	if cond {
 		return d.Add(query, args...)
 	}
@@ -196,7 +196,7 @@ func (d *Sqlo) AddIf(cond bool, query string, args ...any) *Sqlo {
 }
 
 // Var 注册局部宏变量，替代原有的 Mark
-func (d *Sqlo) Var(key string, query string, args ...any) *Sqlo {
+func (d *SQL) Var(key string, query string, args ...any) *SQL {
 	clone := d.copy()
 	if clone.err != nil {
 		return clone
@@ -205,7 +205,7 @@ func (d *Sqlo) Var(key string, query string, args ...any) *Sqlo {
 	return clone
 }
 
-func (d *Sqlo) build() (string, []any, error) {
+func (d *SQL) build() (string, []any, error) {
 	if d.err != nil {
 		return "", nil, d.err
 	}
@@ -388,7 +388,7 @@ func extractNamedArg(src any, name string) (any, error) {
 }
 
 // Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT，支持 Expr
-func (d *Sqlo) Batch(rows [][]any) *Sqlo {
+func (d *SQL) Batch(rows [][]any) *SQL {
 	if len(rows) == 0 {
 		clone := d.copy()
 		clone.err = errors.New("sqlo batch: empty rows")
@@ -428,7 +428,7 @@ func (d *Sqlo) Batch(rows [][]any) *Sqlo {
 			if expr, ok := val.(Expr); ok {
 				// 为 Expr 创建变量节点
 				varName := fmt.Sprintf("__batch_expr_%d_%d_%d", d.copyId, i, j)
-				result = result.Var(varName, expr.SQL, expr.Args...)
+				result = result.Var(varName, expr.Sql, expr.Args...)
 				builder.WriteString("${" + varName + "}")
 			} else {
 				// 普通绑定参数
@@ -445,7 +445,7 @@ func (d *Sqlo) Batch(rows [][]any) *Sqlo {
 
 // BatchInsert 批量插入多条记录，自动从实体列表构建完整 INSERT 语句
 // 所有实体必须具有相同的列结构
-func (d *Sqlo) BatchInsert(table string, entities []any) *Sqlo {
+func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 	if len(entities) == 0 {
 		clone := d.copy()
 		clone.err = errors.New("batch insert: empty entities")
@@ -490,7 +490,7 @@ func (d *Sqlo) BatchInsert(table string, entities []any) *Sqlo {
 }
 
 // List 映射多行到 Slice，dest 可以是 *[]SomeStruct 或 *[]map[string]any
-func (d *Sqlo) List(dest interface{}) error {
+func (d *SQL) List(dest interface{}) error {
 	if mapSlice, ok := dest.(*[]map[string]any); ok {
 		rows, err := d.Rows()
 		if err != nil {
@@ -513,7 +513,7 @@ func (d *Sqlo) List(dest interface{}) error {
 }
 
 // Get 映射单行到 Struct，dest 可以是 *SomeStruct 或 *map[string]any
-func (d *Sqlo) Get(dest any) (found bool, err error) {
+func (d *SQL) Get(dest any) (found bool, err error) {
 	if m, ok := dest.(*map[string]any); ok {
 		rows, err := d.Rows()
 		if err != nil {
@@ -548,7 +548,7 @@ func (d *Sqlo) Get(dest any) (found bool, err error) {
 }
 
 // Exec 执行非查询 SQL
-func (d *Sqlo) Exec() (sql.Result, error) {
+func (d *SQL) Exec() (sql.Result, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return d.db.ExecContext(ctx, query, args...)
 	})
@@ -559,7 +559,7 @@ func (d *Sqlo) Exec() (sql.Result, error) {
 }
 
 // Rows 返回原始 *sqlx.Rows，用于流式处理大结果集
-func (d *Sqlo) Rows() (*sqlx.Rows, error) {
+func (d *SQL) Rows() (*sqlx.Rows, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return d.db.QueryxContext(ctx, query, args...)
 	})
@@ -570,21 +570,21 @@ func (d *Sqlo) Rows() (*sqlx.Rows, error) {
 }
 
 // ToSQL 返回最终 SQL 和参数，不执行，用于调试和日志
-func (d *Sqlo) ToSQL() (string, []any, error) {
+func (d *SQL) ToSQL() (string, []any, error) {
 	return d.build()
 }
 
 // Error 返回 builder 累积的错误
-func (d *Sqlo) Error() error {
+func (d *SQL) Error() error {
 	return d.err
 }
 
-func (d *Sqlo) Select(table string, where string, args ...any) *Sqlo {
+func (d *SQL) Select(table string, where string, args ...any) *SQL {
 	return d.Add("SELECT ${"+F+":*} FROM "+d.quoter(table)+" WHERE "+where, args...)
 }
 
 // Insert 生成并追加 INSERT INTO 语句
-func (d *Sqlo) Insert(table string, data any) *Sqlo {
+func (d *SQL) Insert(table string, data any) *SQL {
 	cols, vals, err := ExtractColsVals(data)
 	if err != nil {
 		clone := d.copy()
@@ -602,7 +602,7 @@ func (d *Sqlo) Insert(table string, data any) *Sqlo {
 		if expr, ok := vals[i].(Expr); ok {
 			varName := fmt.Sprintf("__expr_%d_%d", prefix, i)
 			placeholders[i] = "${" + varName + "}"
-			result = result.Var(varName, expr.SQL, expr.Args...)
+			result = result.Var(varName, expr.Sql, expr.Args...)
 		} else {
 			bindArgs = append(bindArgs, vals[i])
 			placeholders[i] = fmt.Sprintf("#{%d}", len(bindArgs))
@@ -617,7 +617,7 @@ func (d *Sqlo) Insert(table string, data any) *Sqlo {
 }
 
 // Update 生成并追加 UPDATE ... SET 语句
-func (d *Sqlo) Update(table string, data any, where string, args ...any) *Sqlo {
+func (d *SQL) Update(table string, data any, where string, args ...any) *SQL {
 	cols, vals, err := ExtractColsVals(data)
 	if err != nil {
 		clone := d.copy()
@@ -633,7 +633,7 @@ func (d *Sqlo) Update(table string, data any, where string, args ...any) *Sqlo {
 		if expr, ok := vals[i].(Expr); ok {
 			varName := fmt.Sprintf("__expr_%d_%d", prefix, i)
 			setClauses[i] = d.quoter(c) + "=${" + varName + "}"
-			result = result.Var(varName, expr.SQL, expr.Args...)
+			result = result.Var(varName, expr.Sql, expr.Args...)
 		} else {
 			bindArgs = append(bindArgs, vals[i])
 			setClauses[i] = d.quoter(c) + "=" + fmt.Sprintf("#{%d}", len(bindArgs))
@@ -647,7 +647,7 @@ func (d *Sqlo) Update(table string, data any, where string, args ...any) *Sqlo {
 }
 
 // Delete 生成并执行 DELETE FROM 语句
-func (d *Sqlo) Delete(table string, where string, args ...any) *Sqlo {
+func (d *SQL) Delete(table string, where string, args ...any) *SQL {
 	return d.Add(fmt.Sprintf("DELETE FROM %s WHERE", d.quoter(table))).Add(where, args...)
 }
 
@@ -655,8 +655,8 @@ func (d *Sqlo) Delete(table string, where string, args ...any) *Sqlo {
 // 事务支持
 // ==========================================
 
-// Begin 开启事务，返回携带事务状态的新 Sqlo 实例
-func (d *Sqlo) Begin() (*Sqlo, error) {
+// Begin 开启事务，返回携带事务状态的新 SQL 实例
+func (d *SQL) Begin() (*SQL, error) {
 	if d.rawDB == nil {
 		return nil, errors.New("transaction already started")
 	}
@@ -671,7 +671,7 @@ func (d *Sqlo) Begin() (*Sqlo, error) {
 }
 
 // Commit 提交事务
-func (d *Sqlo) Commit() error {
+func (d *SQL) Commit() error {
 	tx, ok := d.db.(*sqlx.Tx)
 	if !ok {
 		return errors.New("no active transaction")
@@ -680,7 +680,7 @@ func (d *Sqlo) Commit() error {
 }
 
 // Rollback 回滚事务
-func (d *Sqlo) Rollback() error {
+func (d *SQL) Rollback() error {
 	tx, ok := d.db.(*sqlx.Tx)
 	if !ok {
 		return errors.New("no active transaction")
@@ -690,7 +690,7 @@ func (d *Sqlo) Rollback() error {
 
 // Transaction 闭包事务：fn 返回 error 或发生 panic 时自动回滚。
 // 若当前已在事务中，直接执行 fn（join 外层事务），不开新事务。
-func (d *Sqlo) Transaction(fn func(*Sqlo) error) error {
+func (d *SQL) Transaction(fn func(*SQL) error) error {
 	if d.rawDB == nil {
 		return fn(d)
 	}

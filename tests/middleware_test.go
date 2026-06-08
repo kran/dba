@@ -1,8 +1,8 @@
-package sqlo_test
+package dba_test
 
 import (
 	"bytes"
-	"codeberg.org/kran/sqlo"
+	"codeberg.org/kran/dba"
 	"context"
 	"errors"
 	"log/slog"
@@ -23,7 +23,7 @@ func TestMiddleware_Logging(t *testing.T) {
 		err   error
 	}
 
-	logged := q.Use(func(next sqlo.ExecFunc) sqlo.ExecFunc {
+	logged := q.Use(func(next dba.ExecFunc) dba.ExecFunc {
 		return func(ctx context.Context, query string, args []any) (any, error) {
 			result, err := next(ctx, query, args)
 			captured.query = query
@@ -51,7 +51,7 @@ func TestMiddleware_ShortCircuit(t *testing.T) {
 	q, db := newQ(t)
 	db.Exec("CREATE TABLE mw_test2 (id INTEGER PRIMARY KEY)")
 
-	blocked := q.Use(func(next sqlo.ExecFunc) sqlo.ExecFunc {
+	blocked := q.Use(func(next dba.ExecFunc) dba.ExecFunc {
 		return func(ctx context.Context, query string, args []any) (any, error) {
 			return nil, errors.New("blocked")
 		}
@@ -77,7 +77,7 @@ func TestMiddleware_Chain_Order(t *testing.T) {
 	}
 
 	chained := q.
-		Use(func(next sqlo.ExecFunc) sqlo.ExecFunc {
+		Use(func(next dba.ExecFunc) dba.ExecFunc {
 			return func(ctx context.Context, query string, args []any) (any, error) {
 				record("A-before")
 				result, err := next(ctx, query, args)
@@ -85,7 +85,7 @@ func TestMiddleware_Chain_Order(t *testing.T) {
 				return result, err
 			}
 		}).
-		Use(func(next sqlo.ExecFunc) sqlo.ExecFunc {
+		Use(func(next dba.ExecFunc) dba.ExecFunc {
 			return func(ctx context.Context, query string, args []any) (any, error) {
 				record("B-before")
 				result, err := next(ctx, query, args)
@@ -94,7 +94,7 @@ func TestMiddleware_Chain_Order(t *testing.T) {
 			}
 		})
 
-	count, _, err := sqlo.Scalar[int](chained.Add("SELECT COUNT(1) FROM mw_test3"))
+	count, _, err := dba.Scalar[int](chained.Add("SELECT COUNT(1) FROM mw_test3"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestMiddleware_Immutable(t *testing.T) {
 	db.Exec("INSERT INTO mw_test4 VALUES (1)")
 
 	called := false
-	withMW := q.Use(func(next sqlo.ExecFunc) sqlo.ExecFunc {
+	withMW := q.Use(func(next dba.ExecFunc) dba.ExecFunc {
 		return func(ctx context.Context, query string, args []any) (any, error) {
 			called = true
 			return next(ctx, query, args)
@@ -145,7 +145,7 @@ func TestMiddleware_WithExec(t *testing.T) {
 	db.Exec("CREATE TABLE mw_test5 (id INTEGER PRIMARY KEY, val INTEGER)")
 
 	var capturedQuery string
-	logged := q.Use(func(next sqlo.ExecFunc) sqlo.ExecFunc {
+	logged := q.Use(func(next dba.ExecFunc) dba.ExecFunc {
 		return func(ctx context.Context, query string, args []any) (any, error) {
 			capturedQuery = query
 			return next(ctx, query, args)
@@ -165,7 +165,7 @@ func TestMiddleware_WithRows(t *testing.T) {
 	db.Exec("INSERT INTO mw_test6 VALUES (2)")
 
 	callCount := 0
-	logged := q.Use(func(next sqlo.ExecFunc) sqlo.ExecFunc {
+	logged := q.Use(func(next dba.ExecFunc) dba.ExecFunc {
 		return func(ctx context.Context, query string, args []any) (any, error) {
 			callCount++
 			return next(ctx, query, args)
@@ -200,8 +200,8 @@ func TestLogMiddleware_Debug(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	logged := q.Use(sqlo.LogHook(logger, 0))
-	count, _, err := sqlo.Scalar[int](logged.Add("SELECT COUNT(1) FROM log_test"))
+	logged := q.Use(dba.LogHook(logger, 0))
+	count, _, err := dba.Scalar[int](logged.Add("SELECT COUNT(1) FROM log_test"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestLogMiddleware_SlowQuery(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// 1ns 阈值，任何查询都算慢
-	logged := q.Use(sqlo.LogHook(logger, 1*time.Nanosecond))
+	logged := q.Use(dba.LogHook(logger, 1*time.Nanosecond))
 	logged.Add("SELECT 1").Get(new(int))
 
 	output := buf.String()
@@ -247,7 +247,7 @@ func TestLogMiddleware_Error(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	logged := q.Use(sqlo.LogHook(logger, 0))
+	logged := q.Use(dba.LogHook(logger, 0))
 	// 查询不存在的表，触发错误
 	logged.Add("SELECT 1 FROM nonexistent_table").Get(new(int))
 

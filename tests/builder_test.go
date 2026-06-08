@@ -1,4 +1,4 @@
-package sqlo_test
+package dba_test
 
 import (
 	"testing"

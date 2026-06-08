@@ -1,7 +1,7 @@
-package sqlo_test
+package dba_test
 
 import (
-	"codeberg.org/kran/sqlo"
+	"codeberg.org/kran/dba"
 	"testing"
 )
 
@@ -187,7 +187,7 @@ func TestInsert_Omitempty_Exec(t *testing.T) {
 func TestUpdate_Expr_NoArgs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Update("users", map[string]any{
-		"version": sqlo.NewExpr("version+1"),
+		"version": dba.NewExpr("version+1"),
 		"name":    "alice",
 	}, "id = #{1}", 1).ToSQL()
 	if err != nil {
@@ -208,7 +208,7 @@ func TestUpdate_Expr_WithMacro(t *testing.T) {
 	q, _ := newQ(t)
 	// Expr 内使用 #{} 宏而不是原始 ?
 	sql, args, err := q.Update("users", map[string]any{
-		"score": sqlo.NewExpr("score+#{1}+#{2}", 10, 11),
+		"score": dba.NewExpr("score+#{1}+#{2}", 10, 11),
 		"name":  "bob",
 	}, "id = #{1}", 2).ToSQL()
 	if err != nil {
@@ -226,8 +226,8 @@ func TestUpdate_Expr_WithMacro(t *testing.T) {
 func TestUpdate_Expr_MultiAdd(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Update("users", map[string]any{
-		"score": sqlo.NewExpr("score+#{1}+#{2}", 10, 11),
-		"age":   sqlo.NewExpr("age+#{1}", 1),
+		"score": dba.NewExpr("score+#{1}+#{2}", 10, 11),
+		"age":   dba.NewExpr("age+#{1}", 1),
 		"name":  "bob",
 	}, "id = #{1}", 2).ToSQL()
 	if err != nil {
@@ -246,7 +246,7 @@ func TestUpdate_Expr_IdentifierMacro(t *testing.T) {
 	q, _ := newQ(t)
 	// Expr 内也能用 @{} 标识符转义
 	sql, args, err := q.Update("stats", map[string]any{
-		"total": sqlo.NewExpr("@{1}+#{2}", "count", 1),
+		"total": dba.NewExpr("@{1}+#{2}", "count", 1),
 	}, "id = #{1}", 5).ToSQL()
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestUpdate_Expr_IdentifierMacro(t *testing.T) {
 func TestInsert_Expr(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Insert("logs", map[string]any{
-		"created_at": sqlo.NewExpr("NOW()"),
+		"created_at": dba.NewExpr("NOW()"),
 		"msg":        "hello",
 	}).ToSQL()
 	if err != nil {
@@ -287,7 +287,7 @@ func TestUpdate_Expr_Exec(t *testing.T) {
 	db.Exec("INSERT  INTO counters VALUES (1, 10)")
 
 	_, err = q.Update("counters", map[string]any{
-		"val": sqlo.NewExpr("val+#{1}", 5),
+		"val": dba.NewExpr("val+#{1}", 5),
 	}, "id = #{1}", 1).Exec()
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +306,7 @@ func TestVal_Int(t *testing.T) {
 	db.Exec("INSERT INTO items VALUES (1, 10)")
 	db.Exec("INSERT INTO items VALUES (2, 20)")
 
-	count, _, err := sqlo.Scalar[int](q.Add("SELECT COUNT(1) FROM items"))
+	count, _, err := dba.Scalar[int](q.Add("SELECT COUNT(1) FROM items"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestVal_String(t *testing.T) {
 	db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
 	db.Exec("INSERT INTO items VALUES (1, 'hello')")
 
-	name, _, err := sqlo.Scalar[string](q.Add("SELECT name FROM items WHERE id = #{1}", 1))
+	name, _, err := dba.Scalar[string](q.Add("SELECT name FROM items WHERE id = #{1}", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestUpdate_Exec(t *testing.T) {
 
 func TestDelete_Exec(t *testing.T) {
 	q, db := newQ(t)
-	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name text)")
 	if err != nil {
 		t.Fatal(err)
 	}

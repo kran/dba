@@ -1,4 +1,4 @@
-package sqlo
+package dba
 
 import (
 	"errors"
@@ -6,7 +6,7 @@ import (
 )
 
 // execRowsAffected 执行并返回影响行数
-func execRowsAffected(q *Sqlo) (int64, error) {
+func execRowsAffected(q *SQL) (int64, error) {
 	result, err := q.Exec()
 	if err != nil {
 		return 0, err
@@ -24,7 +24,7 @@ type SqloBeforeUpdate interface {
 
 // Dao 泛型 DAO，提供基础 CRUD 操作
 type Dao[T any] struct {
-	q         *Sqlo
+	q         *SQL
 	table     string
 	quotedTbl string // 预计算的转义表名
 	pk        string // 主键列名
@@ -32,7 +32,7 @@ type Dao[T any] struct {
 }
 
 // NewDao 创建一个绑定到指定数据源和表的 DAO，主键默认为 "id"
-func NewDao[T any](q *Sqlo, table string) *Dao[T] {
+func NewDao[T any](q *SQL, table string) *Dao[T] {
 	return &Dao[T]{
 		q:         q,
 		table:     table,
@@ -68,14 +68,14 @@ func (d *Dao[T]) TableName(table string) *Dao[T] {
 }
 
 // WithTx 返回一个使用事务连接的 DAO 副本
-func (d *Dao[T]) WithTx(tx *Sqlo) *Dao[T] {
+func (d *Dao[T]) WithTx(tx *SQL) *Dao[T] {
 	clone := d.copy()
 	clone.q = tx
 	return clone
 }
 
-// Q 返回底层 Sqlo，用于自定义查询
-func (d *Dao[T]) Q() *Sqlo {
+// Q 返回底层 SQL，用于自定义查询
+func (d *Dao[T]) Q() *SQL {
 	return d.q
 }
 
@@ -106,8 +106,8 @@ func (d *Dao[T]) Create(data any) (int64, error) {
 	return result.LastInsertId()
 }
 
-// CreateRaw 插入单条记录，返回 *Sqlo 供用户继续链式操作
-func (d *Dao[T]) CreateRaw(data any) *Sqlo {
+// CreateRaw 插入单条记录，返回 *SQL 供用户继续链式操作
+func (d *Dao[T]) CreateRaw(data any) *SQL {
 	if p := d.resolve(data); p != nil {
 		if h, ok := any(p).(SqloBeforeCreate); ok {
 			if err := h.BeforeCreate(); err != nil {
@@ -121,8 +121,8 @@ func (d *Dao[T]) CreateRaw(data any) *Sqlo {
 	return d.q.Insert(d.table, data)
 }
 
-// BatchRaw 批量插入多条记录，返回 *Sqlo 供用户继续链式操作（如 ON CONFLICT）
-func (d *Dao[T]) BatchRaw(entities []T) *Sqlo {
+// BatchRaw 批量插入多条记录，返回 *SQL 供用户继续链式操作（如 ON CONFLICT）
+func (d *Dao[T]) BatchRaw(entities []T) *SQL {
 	if len(entities) == 0 {
 		clone := d.q.copy()
 		clone.err = errors.New("dao batch create: empty entities")

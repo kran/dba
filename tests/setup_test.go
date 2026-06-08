@@ -1,7 +1,7 @@
-package sqlo_test
+package dba_test
 
 import (
-	"codeberg.org/kran/sqlo"
+	"codeberg.org/kran/dba"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
@@ -18,8 +18,8 @@ func newDB(t *testing.T) *sqlx.DB {
 	return db
 }
 
-func newQ(t *testing.T) (*sqlo.Sqlo, *sqlx.DB) {
+func newQ(t *testing.T) (*dba.SQL, *sqlx.DB) {
 	t.Helper()
 	db := newDB(t)
-	return sqlo.New(db).Format(sqlo.DollarFormat), db
+	return dba.New(db).Format(dba.DollarFormat), db
 }

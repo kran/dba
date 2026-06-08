@@ -1,7 +1,7 @@
-package sqlo_test
+package dba_test
 
 import (
-	"codeberg.org/kran/sqlo"
+	"codeberg.org/kran/dba"
 	"strings"
 	"testing"
 )
@@ -26,7 +26,7 @@ func TestBuild_MixedMacros(t *testing.T) {
 func TestBuild_AllMacroTypes(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.
-		Add("SELECT ${F:*} FROM @{1} WHERE name = #{2} ORDER BY !{3}", "users", "alice", "id DESC").
+		Add("SELECT ${F:*} FROM @{1} WHERE NAME = #{2} ORDER BY !{3}", "users", "alice", "id DESC").
 		ToSQL()
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestBuild_VarDefault_EmptyString(t *testing.T) {
 func TestBuild_VarNotSet_NoDefault(t *testing.T) {
 	q, _ := newQ(t)
 	// ${key} 没有默认值且未设置 → 什么都不输出
-	sql, _, err := q.Add("SELECT *${missing} FROM t").ToSQL()
+	sql, _, err := q.Add("SELECT * AS ${missing} FROM t").ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestBuild_VarDefaultSimpleText(t *testing.T) {
 
 func TestBuild_IdentifierNoArgError(t *testing.T) {
 	q, _ := newQ(t)
-	_, _, err := q.Add("SELECT @{user} FROM t").ToSQL()
+	_, _, err := q.Add("SELECT @{USER} FROM t").ToSQL()
 	if err == nil {
 		t.Error("expected error for @{} with no args")
 	}
@@ -455,15 +455,15 @@ func TestBuild_CurlyInString(t *testing.T) {
 func TestBuild_ExprInInsert_MultipleExprs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Insert("t", map[string]any{
-		"a": sqlo.NewExpr("NOW()"),
-		"b": sqlo.NewExpr("#{1} + #{2}", 10, 20),
+		"a": dba.NewExpr("NOW()"),
+		"b": dba.NewExpr("#{1} + #{2}", 10, 20),
 		"c": "hello",
 	}).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// map 排序: a, b, c
-	want := `INSERT  INTO "t" ("a", "b", "c") VALUES (NOW(), $1 + $2, $3)`
+	want := `INSERT  INTO "t" ("a", "b", "c") VALUES (now(), $1 + $2, $3)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -475,8 +475,8 @@ func TestBuild_ExprInInsert_MultipleExprs(t *testing.T) {
 func TestBuild_ExprInUpdate_MultipleExprs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Update("t", map[string]any{
-		"a": sqlo.NewExpr("a + #{1}", 1),
-		"b": sqlo.NewExpr("COALESCE(b, #{1})", "default"),
+		"a": dba.NewExpr("a + #{1}", 1),
+		"b": dba.NewExpr("COALESCE(b, #{1})", "default"),
 		"c": 42,
 	}, "id = #{1}", 5).ToSQL()
 	if err != nil {
@@ -494,7 +494,7 @@ func TestBuild_ExprInUpdate_MultipleExprs(t *testing.T) {
 func TestBuild_ExprNoArgs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Insert("t", map[string]any{
-		"ts": sqlo.NewExpr("CURRENT_TIMESTAMP"),
+		"ts": dba.NewExpr("CURRENT_TIMESTAMP"),
 	}).ToSQL()
 	if err != nil {
 		t.Fatal(err)
@@ -552,7 +552,7 @@ func TestBuild_PageStyleQuery(t *testing.T) {
 		Add("ORDER BY id")
 
 	// count query
-	countSQL, countArgs, err := base.Var(sqlo.F, "COUNT(1)").ToSQL()
+	countSQL, countArgs, err := base.Var(dba.F, "COUNT(1)").ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,8 +582,8 @@ func TestBuild_ImmutableVarDoesNotAffectBase(t *testing.T) {
 	q, _ := newQ(t)
 	base := q.Add("SELECT ${F:*} FROM t")
 
-	v1 := base.Var(sqlo.F, "id, name")
-	v2 := base.Var(sqlo.F, "COUNT(1)")
+	v1 := base.Var(dba.F, "id, name")
+	v2 := base.Var(dba.F, "COUNT(1)")
 
 	sql1, _, _ := base.ToSQL()
 	sql2, _, _ := v1.ToSQL()

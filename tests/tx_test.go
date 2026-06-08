@@ -1,12 +1,12 @@
-package sqlo_test
+package dba_test
 
 import (
-	"codeberg.org/kran/sqlo"
+	"codeberg.org/kran/dba"
 	"errors"
 	"testing"
 )
 
-func setupItemsTable(t *testing.T, q *sqlo.Sqlo) {
+func setupItemsTable(t *testing.T, q *dba.SQL) {
 	t.Helper()
 	_, err := q.Add("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)").Exec()
 	if err != nil {
@@ -14,7 +14,7 @@ func setupItemsTable(t *testing.T, q *sqlo.Sqlo) {
 	}
 }
 
-func countItems(t *testing.T, q *sqlo.Sqlo) int {
+func countItems(t *testing.T, q *dba.SQL) int {
 	t.Helper()
 	var n int
 	if _, err := q.Add("SELECT COUNT(*) FROM items").Get(&n); err != nil {
@@ -27,7 +27,7 @@ func TestTransaction_Commit(t *testing.T) {
 	q, _ := newQ(t)
 	setupItemsTable(t, q)
 
-	err := q.Transaction(func(tx *sqlo.Sqlo) error {
+	err := q.Transaction(func(tx *dba.SQL) error {
 		_, err := tx.Insert("items", map[string]any{"id": 1, "val": "hello"}).Exec()
 		return err
 	})
@@ -44,7 +44,7 @@ func TestTransaction_RollbackOnError(t *testing.T) {
 	q, _ := newQ(t)
 	setupItemsTable(t, q)
 
-	err := q.Transaction(func(tx *sqlo.Sqlo) error {
+	err := q.Transaction(func(tx *dba.SQL) error {
 		if _, err := tx.Insert("items", map[string]any{"id": 1, "val": "hello"}).Exec(); err != nil {
 			return err
 		}
@@ -65,7 +65,7 @@ func TestTransaction_RollbackOnPanic(t *testing.T) {
 
 	func() {
 		defer func() { recover() }()
-		_ = q.Transaction(func(tx *sqlo.Sqlo) error {
+		_ = q.Transaction(func(tx *dba.SQL) error {
 			tx.Insert("items", map[string]any{"id": 1, "val": "hello"}).Exec() //nolint
 			panic("test panic")
 		})
@@ -80,7 +80,7 @@ func TestTransaction_NestedBeginFails(t *testing.T) {
 	q, _ := newQ(t)
 	setupItemsTable(t, q)
 
-	err := q.Transaction(func(tx *sqlo.Sqlo) error {
+	err := q.Transaction(func(tx *dba.SQL) error {
 		_, err := tx.Begin()
 		if err == nil {
 			t.Error("expected error on nested Begin")

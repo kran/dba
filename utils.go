@@ -1,4 +1,4 @@
-package sqlo
+package dba
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 )
 
 // Scalar 泛型函数，获取单个标量值（如 COUNT、MAX、单列查询等）
-func Scalar[T any](d *Sqlo) (T, bool, error) {
+func Scalar[T any](d *SQL) (T, bool, error) {
 	var v T
 	found, err := d.Get(&v)
 	return v, found, err
@@ -18,7 +18,7 @@ func Scalar[T any](d *Sqlo) (T, bool, error) {
 
 // Page 泛型分页查询，要求 q 使用 Mark(F, ...) 标记 SELECT 字段
 // 内部用 COUNT(1) 替换 F 查总数，原 query 加 LIMIT/OFFSET 查数据
-func Page[T any](q *Sqlo, page, size int) ([]T, int64, error) {
+func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 	if page < 1 {
 		page = 1
 	}

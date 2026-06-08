@@ -1,7 +1,7 @@
-package sqlo_test
+package dba_test
 
 import (
-	"codeberg.org/kran/sqlo"
+	"codeberg.org/kran/dba"
 	"errors"
 	"testing"
 )
@@ -12,18 +12,18 @@ type Item struct {
 	Val  int    `db:"val"`
 }
 
-func setupDao(t *testing.T) (*sqlo.Dao[Item], *sqlo.Sqlo) {
+func setupDao(t *testing.T) (*dba.Dao[Item], *dba.SQL) {
 	t.Helper()
 	q, db := newQ(t)
 	_, err := db.Exec(`CREATE TABLE items (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL,
+		name text NOT NULL,
 		val INTEGER NOT NULL DEFAULT 0
 	)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return sqlo.NewDao[Item](q, "items"), q
+	return dba.NewDao[Item](q, "items"), q
 }
 
 func TestDao_Create(t *testing.T) {
@@ -213,7 +213,7 @@ func TestDao_Exists(t *testing.T) {
 func TestDao_WithTx_Commit(t *testing.T) {
 	dao, q := setupDao(t)
 
-	err := q.Transaction(func(tx *sqlo.Sqlo) error {
+	err := q.Transaction(func(tx *dba.SQL) error {
 		txDao := dao.WithTx(tx)
 		if _, err := txDao.Create(Item{Name: "a", Val: 1}); err != nil {
 			return err
@@ -238,7 +238,7 @@ func TestDao_WithTx_Rollback(t *testing.T) {
 
 	dao.Create(Item{Name: "existing", Val: 0})
 
-	_ = q.Transaction(func(tx *sqlo.Sqlo) error {
+	_ = q.Transaction(func(tx *dba.SQL) error {
 		txDao := dao.WithTx(tx)
 		txDao.Create(Item{Name: "will_rollback", Val: 99})
 		return errors.New("fail")
@@ -252,8 +252,8 @@ func TestDao_WithTx_Rollback(t *testing.T) {
 
 func TestDao_CrossDao_Transaction(t *testing.T) {
 	q, db := newQ(t)
-	db.Exec(`CREATE TABLE users2 (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)`)
-	db.Exec(`CREATE TABLE orders2 (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product TEXT)`)
+	db.Exec(`CREATE TABLE users2 (id INTEGER PRIMARY KEY AUTOINCREMENT, name text)`)
+	db.Exec(`CREATE TABLE orders2 (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product text)`)
 
 	type User2 struct {
 		ID   int    `db:"id,omitempty"`
@@ -265,10 +265,10 @@ func TestDao_CrossDao_Transaction(t *testing.T) {
 		Product string `db:"product"`
 	}
 
-	userDao := sqlo.NewDao[User2](q, "users2")
-	orderDao := sqlo.NewDao[Order2](q, "orders2")
+	userDao := dba.NewDao[User2](q, "users2")
+	orderDao := dba.NewDao[Order2](q, "orders2")
 
-	err := q.Transaction(func(tx *sqlo.Sqlo) error {
+	err := q.Transaction(func(tx *dba.SQL) error {
 		userID, err := userDao.WithTx(tx).Create(User2{Name: "alice"})
 		if err != nil {
 			return err
@@ -290,14 +290,14 @@ func TestDao_CrossDao_Transaction(t *testing.T) {
 
 func TestDao_CustomPrimaryKey(t *testing.T) {
 	q, db := newQ(t)
-	db.Exec(`CREATE TABLE configs (key TEXT PRIMARY KEY, val TEXT)`)
+	db.Exec(`CREATE TABLE configs (key text PRIMARY KEY, val text)`)
 
 	type Config struct {
 		Key string `db:"key"`
 		Val string `db:"val"`
 	}
 
-	dao := sqlo.NewDao[Config](q, "configs").PrimaryKey("key")
+	dao := dba.NewDao[Config](q, "configs").PrimaryKey("key")
 
 	// CustomPK 非 int64，用 CreateRaw 代替
 	dao.CreateRaw(Config{Key: "theme", Val: "dark"}).Exec()
@@ -348,18 +348,18 @@ func (h *HookItem) BeforeUpdate() error {
 	return nil
 }
 
-func setupHookDao(t *testing.T) *sqlo.Dao[HookItem] {
+func setupHookDao(t *testing.T) *dba.Dao[HookItem] {
 	t.Helper()
 	q, db := newQ(t)
 	_, err := db.Exec(`CREATE TABLE hook_items (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL,
+		name text NOT NULL,
 		val INTEGER NOT NULL DEFAULT 0
 	)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return sqlo.NewDao[HookItem](q, "hook_items")
+	return dba.NewDao[HookItem](q, "hook_items")
 }
 
 func TestDao_Hook_OnCreate_ModifiesField(t *testing.T) {
@@ -460,7 +460,7 @@ func TestDao_Q_CustomQuery(t *testing.T) {
 	dao.Create(Item{Name: "b", Val: 20})
 
 	// 使用 Q() 构建自定义查询
-	sum, _, err := sqlo.Scalar[int64](dao.Q().Add("SELECT SUM(val) FROM items"))
+	sum, _, err := dba.Scalar[int64](dao.Q().Add("SELECT SUM(val) FROM items"))
 	if err != nil {
 		t.Fatal(err)
 	}

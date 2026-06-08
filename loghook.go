@@ -1,4 +1,4 @@
-package sqlo
+package dba
 
 import (
 	"context"

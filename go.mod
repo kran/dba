@@ -1,4 +1,4 @@
-module codeberg.org/kran/sqlo
+module codeberg.org/kran/dba
 
 go 1.25.7
 
