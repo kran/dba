@@ -1,12 +1,14 @@
 package dba
 
 import (
+	"database/sql/driver"
 	"errors"
 	"fmt"
-	"github.com/jmoiron/sqlx/reflectx"
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/jmoiron/sqlx/reflectx"
 )
 
 // Scalar 泛型函数，获取单个标量值（如 COUNT、MAX、单列查询等）
@@ -105,12 +107,14 @@ func ToMap(model any) map[string]any {
 		}
 		rv = rv.Elem()
 	}
+
 	if rv.Kind() != reflect.Struct {
 		panic("named args source must be a struct or map[string]any")
 	}
 
 	structMap := mapper.TypeMap(rv.Type())
 	result := make(map[string]any, len(structMap.Index))
+	valuableType := reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 
 	for _, fi := range structMap.Index {
 		// fi.Name 就是解析好的 `db` tag (或者默认的小写字段名)
@@ -118,10 +122,28 @@ func ToMap(model any) map[string]any {
 			continue
 		}
 
+		// 跳过 Valuer 类型的子字段 — sql.Null* 等应作为原子列，不展开
+		if len(fi.Index) > 1 {
+			parentField := rv.Type().FieldByIndex(fi.Index[:len(fi.Index)-1])
+			if parentField.Type.Implements(valuableType) {
+				continue
+			}
+		}
+
 		val := reflectx.FieldByIndexesReadOnly(rv, fi.Index)
+
+		// 跳过非 Valuer struct — 子字段已被 reflectx 展开，struct 自身不作为独立列
+		if val.Kind() == reflect.Struct && !val.Type().Implements(valuableType) {
+			continue
+		}
+
 		if _, hasOmitempty := fi.Options["omitempty"]; hasOmitempty {
-			if val.IsZero() {
-				continue // 如果带有 omitempty 且当前是零值，立刻剔除！
+			v := val
+			for v.Kind() == reflect.Ptr && !v.IsNil() {
+				v = v.Elem()
+			}
+			if v.IsZero() {
+				continue
 			}
 		}
 
@@ -133,12 +155,6 @@ func ToMap(model any) map[string]any {
 
 // ExtractColsVals 从 struct 或 map 中提取列名和对应值
 func ExtractColsVals(data any) (cols []string, vals []any, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("extract data failed: %v", r)
-		}
-	}()
-
 	m := ToMap(data)
 	if len(m) == 0 {
 		return nil, nil, errors.New("no columns found or data must be a struct/map")

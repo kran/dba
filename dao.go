@@ -5,15 +5,6 @@ import (
 	"fmt"
 )
 
-// execRowsAffected 执行并返回影响行数
-func execRowsAffected(q *SQL) (int64, error) {
-	result, err := q.Exec()
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 type BeforeCreate interface {
 	BeforeCreate() error
 }
@@ -230,4 +221,13 @@ func (d *Dao[T]) resolve(data any) *T {
 	default:
 		return nil
 	}
+}
+
+// execRowsAffected 执行并返回影响行数
+func execRowsAffected(q *SQL) (int64, error) {
+	result, err := q.Exec()
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

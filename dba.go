@@ -252,7 +252,7 @@ func (d *SQL) build() (string, []any, error) {
 
 			end := strings.IndexByte(str[start:], '}')
 			if end == -1 {
-				return fmt.Errorf("sqlo: unclosed brace in %q", str)
+				return fmt.Errorf("dba: unclosed brace in %q", str)
 			}
 			end += start
 			content := str[start+1 : end]
@@ -275,7 +275,7 @@ func (d *SQL) build() (string, []any, error) {
 
 				if argVal != nil && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
 					if rv.Len() == 0 {
-						return fmt.Errorf("sqlo: empty slice passed to parameter #{%s}", content)
+						return fmt.Errorf("dba: empty slice passed to parameter #{%s}", content)
 					}
 					for j := 0; j < rv.Len(); j++ {
 						if j > 0 {
@@ -309,7 +309,7 @@ func (d *SQL) build() (string, []any, error) {
 				if err != nil {
 					return err
 				} else if val == nil {
-					return fmt.Errorf("sqlo: @{%s} resolved to nil", content)
+					return fmt.Errorf("dba: @{%s} resolved to nil", content)
 				}
 				sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", val)))
 
@@ -318,7 +318,7 @@ func (d *SQL) build() (string, []any, error) {
 				if err != nil {
 					return err
 				} else if val == nil {
-					return fmt.Errorf("sqlo: !{%s} resolved to nil", content)
+					return fmt.Errorf("dba: !{%s} resolved to nil", content)
 				}
 				sqlBuilder.WriteString(fmt.Sprintf("%v", val))
 			}
@@ -359,18 +359,18 @@ func extractNamedArg(src any, name string) (any, error) {
 	rv := reflect.ValueOf(src)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
-			return nil, fmt.Errorf("sqlo: named args source is nil pointer")
+			return nil, fmt.Errorf("dba: named args source is nil pointer")
 		}
 		rv = rv.Elem()
 	}
 
 	if rv.Kind() == reflect.Map {
 		if rv.Type().Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("sqlo: map key must be string")
+			return nil, fmt.Errorf("dba: map key must be string")
 		}
 		val := rv.MapIndex(reflect.ValueOf(name))
 		if !val.IsValid() {
-			return nil, fmt.Errorf("sqlo: named arg '%s' not found in map", name)
+			return nil, fmt.Errorf("dba: named arg '%s' not found in map", name)
 		}
 		return val.Interface(), nil
 	}
@@ -379,26 +379,26 @@ func extractNamedArg(src any, name string) (any, error) {
 		fm := mapper.TypeMap(rv.Type())
 		fi := fm.GetByPath(name)
 		if fi == nil {
-			return nil, fmt.Errorf("sqlo: field '%s' not found in struct", name)
+			return nil, fmt.Errorf("dba: field '%s' not found in struct", name)
 		}
 		return reflectx.FieldByIndexes(rv, fi.Index).Interface(), nil
 	}
 
-	return nil, fmt.Errorf("sqlo: named args source must be struct or map")
+	return nil, fmt.Errorf("dba: named args source must be struct or map")
 }
 
 // Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT，支持 SQLExpr
 func (d *SQL) Batch(rows [][]any) *SQL {
 	if len(rows) == 0 {
 		clone := d.copy()
-		clone.err = errors.New("sqlo batch: empty rows")
+		clone.err = errors.New("dba: batch: empty rows")
 		return clone
 	}
 
 	width := len(rows[0])
 	if width == 0 {
 		clone := d.copy()
-		clone.err = errors.New("sqlo batch: empty row")
+		clone.err = errors.New("dba: batch: empty row")
 		return clone
 	}
 
@@ -411,7 +411,7 @@ func (d *SQL) Batch(rows [][]any) *SQL {
 	for i, row := range rows {
 		if len(row) != width {
 			clone := d.copy()
-			clone.err = fmt.Errorf("sqlo batch: row %d has length %d, expected %d", i, len(row), width)
+			clone.err = fmt.Errorf("dba: batch: row %d has length %d, expected %d", i, len(row), width)
 			return clone
 		}
 

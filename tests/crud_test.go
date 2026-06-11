@@ -2,6 +2,7 @@ package dba_test
 
 import (
 	"codeberg.org/kran/dba"
+	gosql "database/sql"
 	"testing"
 )
 
@@ -180,6 +181,278 @@ func TestInsert_Omitempty_Exec(t *testing.T) {
 	}
 	if name != "alice" {
 		t.Errorf("got name %q", name)
+	}
+}
+
+// gosql.Null* + omitempty 行为
+type nullableUser struct {
+	ID    int              `db:"id,omitempty"`
+	Name  gosql.NullString `db:"name,omitempty"`
+	Bio   gosql.NullString `db:"bio,omitempty"`
+	Age   gosql.NullInt64  `db:"age,omitempty"`
+	Score gosql.NullInt64  `db:"score"`
+}
+
+func TestInsert_NullString_ValidFalse_Omits(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", nullableUser{
+		Name: gosql.NullString{Valid: false},
+		Age:  gosql.NullInt64{Valid: false},
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("score") VALUES ($1)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+
+	tv := gosql.NullInt64{}
+	if len(args) != 1 || args[0] != tv {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_NullString_ValidFalseWithNonZeroValue_Keeps(t *testing.T) {
+	// Valid=false 但 String 非零值 → IsZero()=false → 保留
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", nullableUser{
+		Name: gosql.NullString{Valid: false, String: "hello"},
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("name", "score") VALUES ($1, $2)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	ns := gosql.NullString{Valid: false, String: "hello"}
+	zeroNI := gosql.NullInt64{}
+	if len(args) != 2 || args[0] != ns || args[1] != zeroNI {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_NullString_ValidTrueWithEmpty_Keeps(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", nullableUser{
+		Name: gosql.NullString{Valid: true, String: ""},
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("name", "score") VALUES ($1, $2)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+
+	emptyStr := gosql.NullString{Valid: true, String: ""}
+	zeroNI := gosql.NullInt64{}
+	if len(args) != 2 || args[0] != emptyStr || args[1] != zeroNI {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_NullString_ValidTrueWithValue_Keeps(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", nullableUser{
+		Name: gosql.NullString{Valid: true, String: "alice"},
+		Bio:  gosql.NullString{Valid: true, String: "hello"},
+		Age:  gosql.NullInt64{Valid: true, Int64: 25},
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("age", "bio", "name", "score") VALUES ($1, $2, $3, $4)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+
+	age25 := gosql.NullInt64{Int64: 25, Valid: true}
+	bioHello := gosql.NullString{String: "hello", Valid: true}
+	nameAlice := gosql.NullString{String: "alice", Valid: true}
+	zeroNI := gosql.NullInt64{}
+	if len(args) != 4 || args[0] != age25 || args[1] != bioHello || args[2] != nameAlice || args[3] != zeroNI {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_NullInt64_NoOmitempty_AlwaysKeeps(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", nullableUser{
+		Name:  gosql.NullString{Valid: true, String: "bob"},
+		Score: gosql.NullInt64{Valid: false},
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("name", "score") VALUES ($1, $2)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+
+	nameBob := gosql.NullString{String: "bob", Valid: true}
+	zeroNI := gosql.NullInt64{}
+	if len(args) != 2 || args[0] != nameBob || args[1] != zeroNI {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_NullablePointer_NilOmits(t *testing.T) {
+	type ptrUser struct {
+		Name *gosql.NullString `db:"name,omitempty"`
+		Age  int               `db:"age"`
+	}
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", ptrUser{Age: 30}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("age") VALUES ($1)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 1 || args[0] != 30 {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_NullablePointer_ValidFalseOmits(t *testing.T) {
+	type ptrUser struct {
+		Name *gosql.NullString `db:"name,omitempty"`
+		Age  int               `db:"age"`
+	}
+	name := gosql.NullString{Valid: false}
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", ptrUser{Name: &name, Age: 30}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("age") VALUES ($1)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 1 || args[0] != 30 {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_NullablePointer_ValidTrueKeeps(t *testing.T) {
+	type ptrUser struct {
+		Name *gosql.NullString `db:"name,omitempty"`
+		Age  int               `db:"age"`
+	}
+	name := gosql.NullString{Valid: true, String: "carol"}
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", ptrUser{Name: &name, Age: 30}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("age", "name") VALUES ($1, $2)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+
+	if len(args) != 2 || args[0] != 30 {
+		t.Errorf("args: %v", args)
+	}
+	if ptr, ok := args[1].(*gosql.NullString); !ok || *ptr != (gosql.NullString{String: "carol", Valid: true}) {
+		t.Errorf("args[1]: %v", args[1])
+	}
+}
+
+// 嵌套 struct：匿名嵌入应展开，非 Valuer 命名 struct 应展开
+type BaseEmbed struct {
+	CreatedAt string `db:"created_at"`
+}
+
+type nestedUser struct {
+	BaseEmbed
+	Name string `db:"name"`
+}
+
+func TestInsert_EmbeddedStruct_Flattens(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", nestedUser{
+		Name: "alice",
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("created_at", "name") VALUES ($1, $2)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 2 || args[0] != "" || args[1] != "alice" {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_EmbeddedStruct_WithNullString(t *testing.T) {
+	type embedNullableUser struct {
+		BaseEmbed
+		Name gosql.NullString `db:"name,omitempty"`
+	}
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", embedNullableUser{
+		Name: gosql.NullString{Valid: true, String: "bob"},
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("created_at", "name") VALUES ($1, $2)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	nameBob := gosql.NullString{String: "bob", Valid: true}
+	if len(args) != 2 || args[0] != "" || args[1] != nameBob {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_EmbeddedStruct_NullStringOmitted(t *testing.T) {
+	type embedOmitUser struct {
+		BaseEmbed
+		Name gosql.NullString `db:"name,omitempty"`
+	}
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", embedOmitUser{
+		BaseEmbed: BaseEmbed{CreatedAt: "2024"},
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("created_at") VALUES ($1)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 1 || args[0] != "2024" {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestInsert_NonValuerNamedStruct_Flattens(t *testing.T) {
+	type Meta struct {
+		Version int `db:"version"`
+	}
+	type userWithMeta struct {
+		Name string `db:"name"`
+		Meta Meta   `db:""`
+	}
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", userWithMeta{
+		Name: "alice",
+		Meta: Meta{Version: 3},
+	}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("name", "version") VALUES ($1, $2)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 2 || args[0] != "alice" || args[1] != 3 {
+		t.Errorf("args: %v", args)
 	}
 }
 
