@@ -21,14 +21,14 @@ type H = map[string]any
 
 var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
 
-// Expr 表示一个原始 SQL 表达式，用于 Insert/Update 中需要非绑定值的场景
-type Expr struct {
+// SQLExpr 表示一个原始 SQL 表达式，用于 Insert/Update 中需要非绑定值的场景
+type SQLExpr struct {
 	Sql  string
 	Args []any
 }
 
-func NewExpr(sql string, args ...any) Expr {
-	return Expr{Sql: sql, Args: args}
+func Expr(sql string, args ...any) SQLExpr {
+	return SQLExpr{Sql: sql, Args: args}
 }
 
 // Hook 中间件类型，洋葱模型
@@ -231,10 +231,11 @@ func (d *SQL) build() (string, []any, error) {
 			}
 			start += i
 
-			// 【转义拦截逻辑】：如果看到 \${, \#{, \@{, \!{
-			if start >= 2 && str[start-2] == '\\' && (str[start-1] == '#' || str[start-1] == '$' || str[start-1] == '@' || str[start-1] == '!') {
-				writeText(str[i : start-2])                    // 写入 \ 之前的内容
-				sqlBuilder.WriteString(str[start-1 : start+1]) // 写入如 "#{", 不解析
+			// 双写前缀转义: ##{ → #{ 字面, $${ → ${ 字面, @@{ → @{ 字面, !!{ → !{ 字面
+			if start >= 2 && str[start-1] == str[start-2] && (str[start-1] == '#' || str[start-1] == '$' || str[start-1] == '@' || str[start-1] == '!') {
+				writeText(str[i : start-2])
+				sqlBuilder.WriteByte(str[start-1])
+				sqlBuilder.WriteByte('{')
 				i = start + 1
 				continue
 			}
@@ -386,7 +387,7 @@ func extractNamedArg(src any, name string) (any, error) {
 	return nil, fmt.Errorf("sqlo: named args source must be struct or map")
 }
 
-// Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT，支持 Expr
+// Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT，支持 SQLExpr
 func (d *SQL) Batch(rows [][]any) *SQL {
 	if len(rows) == 0 {
 		clone := d.copy()
@@ -424,8 +425,8 @@ func (d *SQL) Batch(rows [][]any) *SQL {
 				builder.WriteString(", ")
 			}
 
-			if expr, ok := val.(Expr); ok {
-				// 为 Expr 创建变量节点
+			if expr, ok := val.(SQLExpr); ok {
+				// 为 SQLExpr 创建变量节点
 				varName := fmt.Sprintf("__batch_expr_%d_%d_%d", d.copyId, i, j)
 				result = result.Var(varName, expr.Sql, expr.Args...)
 				builder.WriteString("${" + varName + "}")
@@ -600,7 +601,7 @@ func (d *SQL) Insert(table string, data any) *SQL {
 
 	for i, c := range cols {
 		quotedCols[i] = d.quoter(c)
-		if expr, ok := vals[i].(Expr); ok {
+		if expr, ok := vals[i].(SQLExpr); ok {
 			varName := fmt.Sprintf("__expr_%d_%d", prefix, i)
 			placeholders[i] = "${" + varName + "}"
 			result = result.Var(varName, expr.Sql, expr.Args...)
@@ -631,7 +632,7 @@ func (d *SQL) Update(table string, data any, where string, args ...any) *SQL {
 	result := d
 
 	for i, c := range cols {
-		if expr, ok := vals[i].(Expr); ok {
+		if expr, ok := vals[i].(SQLExpr); ok {
 			varName := fmt.Sprintf("__expr_%d_%d", prefix, i)
 			setClauses[i] = d.quoter(c) + "=${" + varName + "}"
 			result = result.Var(varName, expr.Sql, expr.Args...)

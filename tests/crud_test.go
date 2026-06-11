@@ -161,7 +161,7 @@ func TestInsert_Omitempty_NonZeroID(t *testing.T) {
 
 func TestInsert_Omitempty_Exec(t *testing.T) {
 	q, db := newQ(t)
-	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER)")
+	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name text, age INTEGER)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestInsert_Omitempty_Exec(t *testing.T) {
 
 	var id int
 	var name string
-	db.QueryRow("SELECT id, name FROM users LIMIT 1").Scan(&id, &name)
+	db.QueryRow("SELECT id, name FROM users limit 1").Scan(&id, &name)
 	if id == 0 {
 		t.Error("expected auto-generated id, got 0")
 	}
@@ -183,11 +183,11 @@ func TestInsert_Omitempty_Exec(t *testing.T) {
 	}
 }
 
-// Expr: 原始 SQL 表达式
+// SQLExpr: 原始 SQL 表达式
 func TestUpdate_Expr_NoArgs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Update("users", map[string]any{
-		"version": dba.NewExpr("version+1"),
+		"version": dba.Expr("version+1"),
 		"name":    "alice",
 	}, "id = #{1}", 1).ToSQL()
 	if err != nil {
@@ -206,9 +206,9 @@ func TestUpdate_Expr_NoArgs(t *testing.T) {
 
 func TestUpdate_Expr_WithMacro(t *testing.T) {
 	q, _ := newQ(t)
-	// Expr 内使用 #{} 宏而不是原始 ?
+	// SQLExpr 内使用 #{} 宏而不是原始 ?
 	sql, args, err := q.Update("users", map[string]any{
-		"score": dba.NewExpr("score+#{1}+#{2}", 10, 11),
+		"score": dba.Expr("score+#{1}+#{2}", 10, 11),
 		"name":  "bob",
 	}, "id = #{1}", 2).ToSQL()
 	if err != nil {
@@ -226,8 +226,8 @@ func TestUpdate_Expr_WithMacro(t *testing.T) {
 func TestUpdate_Expr_MultiAdd(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Update("users", map[string]any{
-		"score": dba.NewExpr("score+#{1}+#{2}", 10, 11),
-		"age":   dba.NewExpr("age+#{1}", 1),
+		"score": dba.Expr("score+#{1}+#{2}", 10, 11),
+		"age":   dba.Expr("age+#{1}", 1),
 		"name":  "bob",
 	}, "id = #{1}", 2).ToSQL()
 	if err != nil {
@@ -244,9 +244,9 @@ func TestUpdate_Expr_MultiAdd(t *testing.T) {
 
 func TestUpdate_Expr_IdentifierMacro(t *testing.T) {
 	q, _ := newQ(t)
-	// Expr 内也能用 @{} 标识符转义
+	// SQLExpr 内也能用 @{} 标识符转义
 	sql, args, err := q.Update("stats", map[string]any{
-		"total": dba.NewExpr("@{1}+#{2}", "count", 1),
+		"total": dba.Expr("@{1}+#{2}", "count", 1),
 	}, "id = #{1}", 5).ToSQL()
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestUpdate_Expr_IdentifierMacro(t *testing.T) {
 func TestInsert_Expr(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Insert("logs", map[string]any{
-		"created_at": dba.NewExpr("NOW()"),
+		"created_at": dba.Expr("NOW()"),
 		"msg":        "hello",
 	}).ToSQL()
 	if err != nil {
@@ -287,7 +287,7 @@ func TestUpdate_Expr_Exec(t *testing.T) {
 	db.Exec("INSERT  INTO counters VALUES (1, 10)")
 
 	_, err = q.Update("counters", map[string]any{
-		"val": dba.NewExpr("val+#{1}", 5),
+		"val": dba.Expr("val+#{1}", 5),
 	}, "id = #{1}", 1).Exec()
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +317,7 @@ func TestVal_Int(t *testing.T) {
 
 func TestVal_String(t *testing.T) {
 	q, db := newQ(t)
-	db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+	db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name text)")
 	db.Exec("INSERT INTO items VALUES (1, 'hello')")
 
 	name, _, err := dba.Scalar[string](q.Add("SELECT name FROM items WHERE id = #{1}", 1))
@@ -374,7 +374,7 @@ func TestInsert_SliceExpanded(t *testing.T) {
 
 func TestInsert_Exec(t *testing.T) {
 	q, db := newQ(t)
-	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name text)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestInsert_Exec(t *testing.T) {
 
 func TestUpdate_Exec(t *testing.T) {
 	q, db := newQ(t)
-	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+	_, err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name text)")
 	if err != nil {
 		t.Fatal(err)
 	}

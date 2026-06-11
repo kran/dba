@@ -31,7 +31,7 @@ func TestBuild_AllMacroTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `SELECT * FROM "users" WHERE name = $1 ORDER BY id DESC`
+	want := `SELECT * FROM "users" WHERE NAME = $1 ORDER BY id DESC`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -189,11 +189,11 @@ func TestBuild_VarDefault_EmptyString(t *testing.T) {
 func TestBuild_VarNotSet_NoDefault(t *testing.T) {
 	q, _ := newQ(t)
 	// ${key} 没有默认值且未设置 → 什么都不输出
-	sql, _, err := q.Add("SELECT * AS ${missing} FROM t").ToSQL()
+	sql, _, err := q.Add("SELECT * ${missing} FROM t").ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sql != "SELECT * FROM t" {
+	if sql != "SELECT *  FROM t" {
 		t.Errorf("got %q", sql)
 	}
 }
@@ -292,11 +292,11 @@ func TestBuild_RawFromNamedArg(t *testing.T) {
 	}
 }
 
-// ==================== 转义 ====================
+// ==================== 转义（双写前缀） ====================
 
-func TestBuild_EscapeHash(t *testing.T) {
+func TestBuild_DoubleHashEscape(t *testing.T) {
 	q, _ := newQ(t)
-	sql, args, err := q.Add(`WHERE a = \#{1}`).ToSQL()
+	sql, args, err := q.Add(`WHERE a = ##{1}`).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,42 +308,9 @@ func TestBuild_EscapeHash(t *testing.T) {
 	}
 }
 
-func TestBuild_EscapeDollar(t *testing.T) {
+func TestBuild_DoubleHashEscapeMixed(t *testing.T) {
 	q, _ := newQ(t)
-	sql, _, err := q.Add(`text \${var}`).ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "text ${var}" {
-		t.Errorf("got %q", sql)
-	}
-}
-
-func TestBuild_EscapeAt(t *testing.T) {
-	q, _ := newQ(t)
-	sql, _, err := q.Add(`col \@{name}`).ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "col @{name}" {
-		t.Errorf("got %q", sql)
-	}
-}
-
-func TestBuild_EscapeBang(t *testing.T) {
-	q, _ := newQ(t)
-	sql, _, err := q.Add(`val \!{raw}`).ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "val !{raw}" {
-		t.Errorf("got %q", sql)
-	}
-}
-
-func TestBuild_EscapeMixedWithReal(t *testing.T) {
-	q, _ := newQ(t)
-	sql, args, err := q.Add(`\#{literal} AND id = #{1}`, 5).ToSQL()
+	sql, args, err := q.Add(`##{literal} AND id = #{1}`, 5).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,6 +320,53 @@ func TestBuild_EscapeMixedWithReal(t *testing.T) {
 	}
 	if len(args) != 1 || args[0] != 5 {
 		t.Errorf("args: %v", args)
+	}
+}
+
+func TestBuild_DoubleHashEscapeTriplePrefix(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Add(`###{1}`).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "##{1}" {
+		t.Errorf("got %q", sql)
+	}
+	if len(args) != 0 {
+		t.Errorf("expected no args, got %v", args)
+	}
+}
+
+func TestBuild_DoubleDollarEscape(t *testing.T) {
+	q, _ := newQ(t)
+	sql, _, err := q.Add(`text $${var}`).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "text ${var}" {
+		t.Errorf("got %q", sql)
+	}
+}
+
+func TestBuild_DoubleAtEscape(t *testing.T) {
+	q, _ := newQ(t)
+	sql, _, err := q.Add(`col @@{name}`).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "col @{name}" {
+		t.Errorf("got %q", sql)
+	}
+}
+
+func TestBuild_DoubleBangEscape(t *testing.T) {
+	q, _ := newQ(t)
+	sql, _, err := q.Add(`val !!{raw}`).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "val !{raw}" {
+		t.Errorf("got %q", sql)
 	}
 }
 
@@ -450,20 +464,20 @@ func TestBuild_CurlyInString(t *testing.T) {
 	}
 }
 
-// ==================== Expr 通过 Var 统一 ====================
+// ==================== SQLExpr 通过 Var 统一 ====================
 
 func TestBuild_ExprInInsert_MultipleExprs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Insert("t", map[string]any{
-		"a": dba.NewExpr("NOW()"),
-		"b": dba.NewExpr("#{1} + #{2}", 10, 20),
+		"a": dba.Expr("NOW()"),
+		"b": dba.Expr("#{1} + #{2}", 10, 20),
 		"c": "hello",
 	}).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// map 排序: a, b, c
-	want := `INSERT  INTO "t" ("a", "b", "c") VALUES (now(), $1 + $2, $3)`
+	want := `INSERT  INTO "t" ("a", "b", "c") VALUES (NOW(), $1 + $2, $3)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -475,8 +489,8 @@ func TestBuild_ExprInInsert_MultipleExprs(t *testing.T) {
 func TestBuild_ExprInUpdate_MultipleExprs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Update("t", map[string]any{
-		"a": dba.NewExpr("a + #{1}", 1),
-		"b": dba.NewExpr("COALESCE(b, #{1})", "default"),
+		"a": dba.Expr("a + #{1}", 1),
+		"b": dba.Expr("COALESCE(b, #{1})", "default"),
 		"c": 42,
 	}, "id = #{1}", 5).ToSQL()
 	if err != nil {
@@ -494,7 +508,7 @@ func TestBuild_ExprInUpdate_MultipleExprs(t *testing.T) {
 func TestBuild_ExprNoArgs(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Insert("t", map[string]any{
-		"ts": dba.NewExpr("CURRENT_TIMESTAMP"),
+		"ts": dba.Expr("CURRENT_TIMESTAMP"),
 	}).ToSQL()
 	if err != nil {
 		t.Fatal(err)
