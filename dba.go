@@ -5,57 +5,69 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/jmoiron/sqlx"
-	"github.com/jmoiron/sqlx/reflectx"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/jmoiron/sqlx"
+	"github.com/jmoiron/sqlx/reflectx"
 )
 
+// F is the default field variable name used by Select and Page.
 const (
 	F = "F"
 	I = "I"
 )
 
+// H is a shorthand for map[string]any.
 type H = map[string]any
 
 var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
 
-// SQLExpr 表示一个原始 SQL 表达式，用于 Insert/Update 中需要非绑定值的场景
+// SQLExpr wraps a raw SQL expression for Insert/Update values.
 type SQLExpr struct {
 	Sql  string
 	Args []any
 }
 
+// Expr creates a SQLExpr with optional bind arguments.
 func Expr(sql string, args ...any) SQLExpr {
 	return SQLExpr{Sql: sql, Args: args}
 }
 
-// Hook 中间件类型，洋葱模型
+// Hook wraps an ExecFunc in onion-style middleware.
 type Hook func(next ExecFunc) ExecFunc
+
+// ExecFunc is the execution function passed through the middleware chain.
 type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
 
-// PlaceholderFormat 用于多库兼容 (PG的 $1, MySQL的 ?)
+// PlaceholderFormat generates a placeholder for the n-th parameter.
 type PlaceholderFormat func(idx int) string
 
-func QmarkFormat(_ int) string    { return "?" }
+// QmarkFormat returns "?" for every index.
+func QmarkFormat(_ int) string { return "?" }
+
+// DollarFormat returns "$1", "$2", ...
 func DollarFormat(idx int) string { return "$" + strconv.Itoa(idx) }
 
-// Quoter 用于 @{} 宏的标识符安全转义 (比如把 user 转为 `user` 或 "user")
+// Quoter quotes an identifier for the target dialect.
 type Quoter func(string) string
 
+// MySQLQuoter wraps identifiers in backticks.
 func MySQLQuoter(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
-func AnsiQuoter(s string) string  { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// AnsiQuoter wraps identifiers in double quotes.
+func AnsiQuoter(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 type node struct {
 	rawSQL string
 	args   []any
 }
 
-// SQL the builder
+// SQL is an immutable, chainable query builder backed by sqlx.
 type SQL struct {
-	mainNodes []node          // 主干节点
-	varNodes  map[string]node // 宏变量节点 (由 Var 注册)
+	mainNodes []node
+	varNodes  map[string]node
 
 	db         sqlx.ExtContext
 	rawDB      *sqlx.DB
@@ -68,7 +80,8 @@ type SQL struct {
 	copyId     int
 }
 
-// New 包装现有的 sqlx.DB
+// New creates a SQL builder from a sqlx.DB. Auto-detects driver for
+// placeholder format and identifier quoting.
 func New(db *sqlx.DB) *SQL {
 	driver := db.DriverName()
 	quoter := AnsiQuoter
@@ -95,7 +108,6 @@ func New(db *sqlx.DB) *SQL {
 	}
 }
 
-// copy 实现不可变模式 (Immutable)
 func (d *SQL) copy() *SQL {
 	clone := &SQL{
 		mainNodes:  make([]node, len(d.mainNodes)),
@@ -120,28 +132,28 @@ func (d *SQL) copy() *SQL {
 	return clone
 }
 
-// WithContext 设置上下文
+// WithContext returns a new builder with the given context.
 func (d *SQL) WithContext(ctx context.Context) *SQL {
 	clone := d.copy()
 	clone.ctx = ctx
 	return clone
 }
 
-// Quoter change quoter
+// Quoter returns a new builder with the given identifier quoter.
 func (d *SQL) Quoter(quoter Quoter) *SQL {
 	clone := d.copy()
 	clone.quoter = quoter
 	return clone
 }
 
-// Format change placeholder format
+// Format returns a new builder with the given placeholder format.
 func (d *SQL) Format(formatter PlaceholderFormat) *SQL {
 	clone := d.copy()
 	clone.format = formatter
 	return clone
 }
 
-// Unsafe 返回一个忽略未映射列的 SQL（不报 "missing destination" 错误）
+// Unsafe returns a new builder that ignores unmapped columns.
 func (d *SQL) Unsafe() *SQL {
 	clone := d.copy()
 	switch v := d.db.(type) {
@@ -156,14 +168,13 @@ func (d *SQL) Unsafe() *SQL {
 	return clone
 }
 
-// Use 添加中间件，返回新实例
+// Use returns a new builder with the given hooks appended.
 func (d *SQL) Use(mw ...Hook) *SQL {
 	clone := d.copy()
 	clone.hooks = append(clone.hooks, mw...)
 	return clone
 }
 
-// execute 构建 SQL 并通过中间件链执行
 func (d *SQL) execute(fn ExecFunc) (any, error) {
 	query, args, err := d.build()
 	if err != nil {
@@ -176,7 +187,7 @@ func (d *SQL) execute(fn ExecFunc) (any, error) {
 	return exec(d.ctx, query, args)
 }
 
-// Add 核心方法：添加 SQL 片段并解析宏
+// Add appends a SQL fragment and returns a new builder.
 func (d *SQL) Add(query string, args ...any) *SQL {
 	clone := d.copy()
 	if clone.err != nil {
@@ -186,7 +197,7 @@ func (d *SQL) Add(query string, args ...any) *SQL {
 	return clone
 }
 
-// AddIf 条件拼接
+// AddIf conditionally appends a SQL fragment.
 func (d *SQL) AddIf(cond bool, query string, args ...any) *SQL {
 	if cond {
 		return d.Add(query, args...)
@@ -194,7 +205,7 @@ func (d *SQL) AddIf(cond bool, query string, args ...any) *SQL {
 	return d
 }
 
-// Var 注册局部宏变量，替代原有的 Mark
+// Var registers a named variable for ${key} expansion.
 func (d *SQL) Var(key string, query string, args ...any) *SQL {
 	clone := d.copy()
 	if clone.err != nil {
@@ -211,7 +222,7 @@ func (d *SQL) build() (string, []any, error) {
 
 	var sqlBuilder strings.Builder
 	var finalArgs []any
-	argCount := 0 // 全局参数索引，用于生成 $1, $2 等
+	argCount := 0
 
 	sqlBuilder.Grow(512)
 
@@ -231,7 +242,7 @@ func (d *SQL) build() (string, []any, error) {
 			}
 			start += i
 
-			// 双写前缀转义: ##{ → #{ 字面, $${ → ${ 字面, @@{ → @{ 字面, !!{ → !{ 字面
+			// doubled-prefix escape: ##{ → literal #{, etc.
 			if start >= 2 && str[start-1] == str[start-2] && (str[start-1] == '#' || str[start-1] == '$' || str[start-1] == '@' || str[start-1] == '!') {
 				writeText(str[i : start-2])
 				sqlBuilder.WriteByte(str[start-1])
@@ -240,7 +251,7 @@ func (d *SQL) build() (string, []any, error) {
 				continue
 			}
 
-			// 检查有效前缀
+			// check valid prefix
 			if start == 0 || (str[start-1] != '#' && str[start-1] != '$' && str[start-1] != '@' && str[start-1] != '!') {
 				writeText(str[i : start+1])
 				i = start + 1
@@ -258,19 +269,18 @@ func (d *SQL) build() (string, []any, error) {
 			content := str[start+1 : end]
 
 			switch prefix {
-			case '#': // 参数绑定 #{1} 或 #{name}
+			case '#':
 				argVal, err := resolveArg(n.args, content)
 				if err != nil {
 					return err
 				}
 
-				// 切片自动展开 (干掉 sqlx.In)
 				rv := reflect.ValueOf(argVal)
 				for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 					if rv.IsNil() {
 						break
 					}
-					rv = rv.Elem() // 完美解引用
+					rv = rv.Elem()
 				}
 
 				if argVal != nil && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
@@ -291,7 +301,7 @@ func (d *SQL) build() (string, []any, error) {
 					finalArgs = append(finalArgs, argVal)
 				}
 
-			case '$': // 模板宏 ${key:default} 递归展开
+			case '$':
 				parts := strings.SplitN(content, ":", 2)
 				key := strings.TrimSpace(parts[0])
 				if varNode, ok := d.varNodes[key]; ok {
@@ -304,7 +314,7 @@ func (d *SQL) build() (string, []any, error) {
 					}
 				}
 
-			case '@': // 标识符安全转义 @{1} 或 @{name}
+			case '@':
 				val, err := resolveArg(n.args, content)
 				if err != nil {
 					return err
@@ -313,7 +323,7 @@ func (d *SQL) build() (string, []any, error) {
 				}
 				sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", val)))
 
-			case '!': // 纯文本原样输出 !{1} 或 !{name}
+			case '!':
 				val, err := resolveArg(n.args, content)
 				if err != nil {
 					return err
@@ -340,21 +350,19 @@ func (d *SQL) build() (string, []any, error) {
 	return sqlBuilder.String(), finalArgs, nil
 }
 
-// resolveArg 根据 content 尝试解析为位置参数或命名参数
 func resolveArg(args []any, content string) (any, error) {
 	if idx, err := strconv.Atoi(content); err == nil {
 		if idx < 1 || idx > len(args) {
-			return nil, fmt.Errorf("index %d out of bounds", idx)
+			return nil, fmt.Errorf("dba: index %d out of bounds", idx)
 		}
 		return args[idx-1], nil
 	}
 	if len(args) == 0 {
-		return nil, fmt.Errorf("no args")
+		return nil, fmt.Errorf("dba: no args")
 	}
 	return extractNamedArg(args[len(args)-1], content)
 }
 
-// extractNamedArg 辅助函数：通过反射获取命名参数
 func extractNamedArg(src any, name string) (any, error) {
 	rv := reflect.ValueOf(src)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
@@ -381,13 +389,13 @@ func extractNamedArg(src any, name string) (any, error) {
 		if fi == nil {
 			return nil, fmt.Errorf("dba: field '%s' not found in struct", name)
 		}
-		return reflectx.FieldByIndexes(rv, fi.Index).Interface(), nil
+		return reflectx.FieldByIndexesReadOnly(rv, fi.Index).Interface(), nil
 	}
 
 	return nil, fmt.Errorf("dba: named args source must be struct or map")
 }
 
-// Batch 生成 VALUES (?,?,...), (?,?,...) 用于批量 INSERT，支持 SQLExpr
+// Batch generates parenthesized value groups for bulk INSERT.
 func (d *SQL) Batch(rows [][]any) *SQL {
 	if len(rows) == 0 {
 		clone := d.copy()
@@ -402,7 +410,7 @@ func (d *SQL) Batch(rows [][]any) *SQL {
 		return clone
 	}
 
-	result := d // 累积 Var 节点
+	result := d
 	var builder strings.Builder
 	builder.Grow(len(rows) * width * 8)
 	var bindArgs []any
@@ -426,12 +434,10 @@ func (d *SQL) Batch(rows [][]any) *SQL {
 			}
 
 			if expr, ok := val.(SQLExpr); ok {
-				// 为 SQLExpr 创建变量节点
-				varName := fmt.Sprintf("__batch_expr_%d_%d_%d", d.copyId, i, j)
+				varName := fmt.Sprintf("__dba_batch_%d_%d_%d", d.copyId, i, j)
 				result = result.Var(varName, expr.Sql, expr.Args...)
 				builder.WriteString("${" + varName + "}")
 			} else {
-				// 普通绑定参数
 				builder.WriteString(fmt.Sprintf("#{%d}", argIdx))
 				bindArgs = append(bindArgs, val)
 				argIdx++
@@ -443,24 +449,22 @@ func (d *SQL) Batch(rows [][]any) *SQL {
 	return result.Add(builder.String(), bindArgs...)
 }
 
-// BatchInsert 批量插入多条记录，自动从实体列表构建完整 INSERT 语句
-// 所有实体必须具有相同的列结构
+// BatchInsert builds a complete INSERT from a slice of entities.
+// All entities must have the same column structure.
 func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 	if len(entities) == 0 {
 		clone := d.copy()
-		clone.err = errors.New("batch insert: empty entities")
+		clone.err = errors.New("dba: batch insert: empty entities")
 		return clone
 	}
 
-	// 从第一个实体提取列
 	cols, _, err := ExtractColsVals(entities[0])
 	if err != nil || len(cols) == 0 {
 		clone := d.copy()
-		clone.err = fmt.Errorf("batch insert: %w", err)
+		clone.err = fmt.Errorf("dba: batch insert: %w", err)
 		return clone
 	}
 
-	// 验证所有实体列结构一致并构建 rows
 	rows := make([][]any, len(entities))
 	for i, entity := range entities {
 		m := ToMap(entity)
@@ -468,7 +472,7 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 		for j, col := range cols {
 			if val, ok := m[col]; !ok {
 				clone := d.copy()
-				clone.err = fmt.Errorf("batch insert: entity %d missing column %s", i, col)
+				clone.err = fmt.Errorf("dba: batch insert: entity %d missing column %s", i, col)
 				return clone
 			} else {
 				row[j] = val
@@ -477,7 +481,6 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 		rows[i] = row
 	}
 
-	// 构建完整 INSERT 头部
 	quotedCols := make([]string, len(cols))
 	for i, col := range cols {
 		quotedCols[i] = d.quoter(col)
@@ -489,7 +492,7 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 	return d.Add(insertHead).Batch(rows)
 }
 
-// List 映射多行到 Slice，dest 可以是 *[]SomeStruct 或 *[]map[string]any
+// List scans multiple rows into a slice pointer.
 func (d *SQL) List(dest interface{}) error {
 	if mapSlice, ok := dest.(*[]map[string]any); ok {
 		rows, err := d.Rows()
@@ -512,7 +515,7 @@ func (d *SQL) List(dest interface{}) error {
 	return err
 }
 
-// Get 映射单行到 Struct，dest 可以是 *SomeStruct 或 *map[string]any
+// Get scans a single row. Returns (false, nil) when no row is found.
 func (d *SQL) Get(dest any) (found bool, err error) {
 	if m, ok := dest.(*map[string]any); ok {
 		rows, err := d.Rows()
@@ -523,7 +526,7 @@ func (d *SQL) Get(dest any) (found bool, err error) {
 
 		if !rows.Next() {
 			if err := rows.Err(); err != nil {
-				return false, err // 真正的游标异常
+				return false, err
 			}
 			return false, nil
 		}
@@ -549,7 +552,7 @@ func (d *SQL) Get(dest any) (found bool, err error) {
 	return true, nil
 }
 
-// Exec 执行非查询 SQL
+// Exec builds and executes a non-query statement.
 func (d *SQL) Exec() (sql.Result, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return d.db.ExecContext(ctx, query, args...)
@@ -560,7 +563,7 @@ func (d *SQL) Exec() (sql.Result, error) {
 	return result.(sql.Result), nil
 }
 
-// Rows 返回原始 *sqlx.Rows，用于流式处理大结果集
+// Rows returns a raw *sqlx.Rows cursor for streaming.
 func (d *SQL) Rows() (*sqlx.Rows, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return d.db.QueryxContext(ctx, query, args...)
@@ -571,26 +574,27 @@ func (d *SQL) Rows() (*sqlx.Rows, error) {
 	return result.(*sqlx.Rows), nil
 }
 
-// ToSQL 返回最终 SQL 和参数，不执行，用于调试和日志
+// ToSQL returns the built SQL and arguments without executing.
 func (d *SQL) ToSQL() (string, []any, error) {
 	return d.build()
 }
 
-// Error 返回 builder 累积的错误
+// Error returns the accumulated error on this builder.
 func (d *SQL) Error() error {
 	return d.err
 }
 
+// Select generates a SELECT statement with ${F:*} for field expansion.
 func (d *SQL) Select(table string, where string, args ...any) *SQL {
 	return d.Add("SELECT ${"+F+":*} FROM "+d.quoter(table)+" WHERE "+where, args...)
 }
 
-// Insert 生成并追加 INSERT INTO 语句
+// Insert generates and appends an INSERT INTO statement.
 func (d *SQL) Insert(table string, data any) *SQL {
 	cols, vals, err := ExtractColsVals(data)
 	if err != nil {
 		clone := d.copy()
-		clone.err = fmt.Errorf("insert: %w", err)
+		clone.err = fmt.Errorf("dba: insert: %w", err)
 		return clone
 	}
 	quotedCols := make([]string, len(cols))
@@ -618,12 +622,12 @@ func (d *SQL) Insert(table string, data any) *SQL {
 	return result.Add(query, bindArgs...)
 }
 
-// Update 生成并追加 UPDATE ... SET 语句
+// Update generates and appends an UPDATE ... SET statement.
 func (d *SQL) Update(table string, data any, where string, args ...any) *SQL {
 	cols, vals, err := ExtractColsVals(data)
 	if err != nil {
 		clone := d.copy()
-		clone.err = fmt.Errorf("update: %w", err)
+		clone.err = fmt.Errorf("dba: update: %w", err)
 		return clone
 	}
 	setClauses := make([]string, len(cols))
@@ -648,19 +652,15 @@ func (d *SQL) Update(table string, data any, where string, args ...any) *SQL {
 	return result.Add(setQuery, bindArgs...).Add(where, args...)
 }
 
-// Delete 生成并执行 DELETE FROM 语句
+// Delete generates and appends a DELETE FROM statement.
 func (d *SQL) Delete(table string, where string, args ...any) *SQL {
 	return d.Add(fmt.Sprintf("DELETE FROM %s WHERE", d.quoter(table))).Add(where, args...)
 }
 
-// ==========================================
-// 事务支持
-// ==========================================
-
-// Begin 开启事务，返回携带事务状态的新 SQL 实例
+// Begin starts a transaction and returns a new builder backed by the Tx.
 func (d *SQL) Begin() (*SQL, error) {
 	if d.rawDB == nil {
-		return nil, errors.New("transaction already started")
+		return nil, errors.New("dba: transaction already started")
 	}
 	tx, err := d.rawDB.BeginTxx(d.ctx, nil)
 	if err != nil {
@@ -672,26 +672,27 @@ func (d *SQL) Begin() (*SQL, error) {
 	return clone, nil
 }
 
-// Commit 提交事务
+// Commit commits the active transaction.
 func (d *SQL) Commit() error {
 	tx, ok := d.db.(*sqlx.Tx)
 	if !ok {
-		return errors.New("no active transaction")
+		return errors.New("dba: no active transaction")
 	}
 	return tx.Commit()
 }
 
-// Rollback 回滚事务
+// Rollback rolls back the active transaction.
 func (d *SQL) Rollback() error {
 	tx, ok := d.db.(*sqlx.Tx)
 	if !ok {
-		return errors.New("no active transaction")
+		return errors.New("dba: no active transaction")
 	}
 	return tx.Rollback()
 }
 
-// Transaction 闭包事务：fn 返回 error 或发生 panic 时自动回滚。
-// 若当前已在事务中，直接执行 fn（join 外层事务），不开新事务。
+// Transaction executes fn inside a transaction. If fn returns an error or
+// panics, the transaction is rolled back. If already in a transaction, fn
+// is executed directly without nesting.
 func (d *SQL) Transaction(fn func(*SQL) error) error {
 	if d.rawDB == nil {
 		return fn(d)

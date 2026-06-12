@@ -11,15 +11,16 @@ import (
 	"github.com/jmoiron/sqlx/reflectx"
 )
 
-// Scalar 泛型函数，获取单个标量值（如 COUNT、MAX、单列查询等）
+// Scalar returns a single scalar value from a query.
 func Scalar[T any](d *SQL) (T, bool, error) {
 	var v T
 	found, err := d.Get(&v)
 	return v, found, err
 }
 
-// Page 泛型分页查询，要求 q 使用 Mark(F, ...) 标记 SELECT 字段
-// 内部用 COUNT(1) 替换 F 查总数，原 query 加 LIMIT/OFFSET 查数据
+// Page executes a paginated query. Internally substitutes F with COUNT(1)
+// for the total count, then adds LIMIT/OFFSET for the data page.
+// The query must contain ${F:...} or have Var(F, ...) registered.
 func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 	if page < 1 {
 		page = 1
@@ -28,7 +29,6 @@ func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 		size = 10
 	}
 
-	// 检查 ${F} 或 ${F:...} 是否出现在查询中
 	hasF := false
 	needle := "${" + F
 	for _, node := range q.mainNodes {
@@ -40,38 +40,33 @@ func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 
 	if !hasF {
 		if _, ok := q.varNodes[F]; !ok {
-			return nil, 0, fmt.Errorf("page requires ${F:...} or Var(F, ...) in query")
+			return nil, 0, fmt.Errorf("dba: page requires ${F:...} or Var(F, ...) in query")
 		}
 	}
 
-	// 查总数：替换 F 为 COUNT(1)
 	total, _, err := Scalar[int64](q.Var(F, "COUNT(1)"))
 	var items []T
 	if err != nil || total == 0 {
 		return items, total, err
 	}
-	// 查数据
 	offset := (page - 1) * size
 	err = q.Add("LIMIT #{1} OFFSET #{2}", size, offset).List(&items)
 	return items, total, err
 }
 
-// IsOk 检查传入的值是否为 "ok" (非 nil, 非空白字符串, 非空集合/数组/字典)
+// IsOk returns true if v is non-nil, non-blank string, or non-empty
+// slice/array/map.
 func IsOk(v any) bool {
 	if v == nil {
 		return false
 	}
 
-	// 常用类型的快速路径 (Type Switch) - 提升性能，避免反射开销
 	switch val := v.(type) {
 	case string:
 		return strings.TrimSpace(val) != ""
 	}
 
-	// 借助反射处理动态类型 (Slice, Array, Map, 指针, 自定义别名等)
 	rv := reflect.ValueOf(v)
-
-	// 解引用：处理指针和接口的嵌套情况
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return false
@@ -79,22 +74,20 @@ func IsOk(v any) bool {
 		rv = rv.Elem()
 	}
 
-	// 根据具体的底层数据结构（Kind）进行判断
 	switch rv.Kind() {
 	case reflect.String:
-		// 处理类似 `type MyString string` 这种自定义别名类型
 		return strings.TrimSpace(rv.String()) != ""
 	case reflect.Slice, reflect.Array, reflect.Map:
 		return rv.Len() > 0
 	case reflect.Invalid:
-		// 防御性兜底，通常在 v 是彻底的 nil 时会走到这里
 		return false
 	default:
 		return true
 	}
 }
 
-// ToMap 极简版的反射转换为 map
+// ToMap converts a struct or map to map[string]any using db tags.
+// Panics if model is neither a struct nor a map.
 func ToMap(model any) map[string]any {
 	if m, ok := model.(map[string]any); ok {
 		return m
@@ -103,7 +96,7 @@ func ToMap(model any) map[string]any {
 	rv := reflect.ValueOf(model)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
-			return make(map[string]any) // 空指针直接返回空 map
+			return make(map[string]any)
 		}
 		rv = rv.Elem()
 	}
@@ -117,12 +110,11 @@ func ToMap(model any) map[string]any {
 	valuableType := reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 
 	for _, fi := range structMap.Index {
-		// fi.Name 就是解析好的 `db` tag (或者默认的小写字段名)
 		if fi.Name == "-" || fi.Name == "" {
 			continue
 		}
 
-		// 跳过 Valuer 类型的子字段 — sql.Null* 等应作为原子列，不展开
+		// skip sub-fields of Valuer types — treat the whole thing as an atomic column
 		if len(fi.Index) > 1 {
 			parentField := rv.Type().FieldByIndex(fi.Index[:len(fi.Index)-1])
 			if parentField.Type.Implements(valuableType) {
@@ -132,7 +124,7 @@ func ToMap(model any) map[string]any {
 
 		val := reflectx.FieldByIndexesReadOnly(rv, fi.Index)
 
-		// 跳过非 Valuer struct — 子字段已被 reflectx 展开，struct 自身不作为独立列
+		// skip non-Valuer structs — sub-fields are already expanded by reflectx
 		if val.Kind() == reflect.Struct && !val.Type().Implements(valuableType) {
 			continue
 		}
@@ -153,14 +145,13 @@ func ToMap(model any) map[string]any {
 	return result
 }
 
-// ExtractColsVals 从 struct 或 map 中提取列名和对应值
+// ExtractColsVals extracts sorted column names and values from a struct or map.
 func ExtractColsVals(data any) (cols []string, vals []any, err error) {
 	m := ToMap(data)
 	if len(m) == 0 {
-		return nil, nil, errors.New("no columns found or data must be a struct/map")
+		return nil, nil, errors.New("dba: no columns found or data must be a struct/map")
 	}
 
-	// 排序保证生成的 SQL 字符串绝对稳定，利于 DB 预编译缓存
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

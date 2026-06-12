@@ -5,24 +5,26 @@ import (
 	"fmt"
 )
 
+// BeforeCreate is implemented by structs that need a hook before INSERT.
 type BeforeCreate interface {
 	BeforeCreate() error
 }
 
+// BeforeUpdate is implemented by structs that need a hook before UPDATE.
 type BeforeUpdate interface {
 	BeforeUpdate() error
 }
 
-// Dao 泛型 DAO，提供基础 CRUD 操作
+// Dao is a generic single-table CRUD helper.
 type Dao[T any] struct {
 	q         *SQL
 	table     string
-	quotedTbl string // 预计算的转义表名
-	pk        string // 主键列名
-	quotedPK  string // 预计算的转义主键
+	quotedTbl string
+	pk        string
+	quotedPK  string
 }
 
-// NewDao 创建一个绑定到指定数据源和表的 DAO，主键默认为 "id"
+// NewDao creates a Dao bound to the given table. Default primary key is "id".
 func NewDao[T any](q *SQL, table string) *Dao[T] {
 	return &Dao[T]{
 		q:         q,
@@ -43,7 +45,7 @@ func (d *Dao[T]) copy() *Dao[T] {
 	}
 }
 
-// PrimaryKey 设置主键列名，返回自身以支持链式调用
+// PrimaryKey returns a new Dao with the given primary key column.
 func (d *Dao[T]) PrimaryKey(pk string) *Dao[T] {
 	clone := d.copy()
 	clone.pk = pk
@@ -51,6 +53,7 @@ func (d *Dao[T]) PrimaryKey(pk string) *Dao[T] {
 	return clone
 }
 
+// TableName returns a new Dao with the given table name.
 func (d *Dao[T]) TableName(table string) *Dao[T] {
 	clone := d.copy()
 	clone.table = table
@@ -58,21 +61,20 @@ func (d *Dao[T]) TableName(table string) *Dao[T] {
 	return clone
 }
 
-// WithTx 返回一个使用事务连接的 DAO 副本
+// WithTx returns a Dao backed by the given transaction.
 func (d *Dao[T]) WithTx(tx *SQL) *Dao[T] {
 	clone := d.copy()
 	clone.q = tx
 	return clone
 }
 
-// Q 返回底层 SQL，用于自定义查询
+// Q returns the underlying SQL builder for custom queries.
 func (d *Dao[T]) Q() *SQL {
 	return d.q
 }
 
-// Create 插入单条记录并返回自增主键
-// PG: INSERT ... RETURNING pk
-// 其它: INSERT → LastInsertId
+// Create inserts a single record and returns the generated primary key.
+// On PostgreSQL, uses RETURNING. On other drivers, uses LastInsertId.
 func (d *Dao[T]) Create(data any) (int64, error) {
 	if p := d.resolve(data); p != nil {
 		if h, ok := any(p).(BeforeCreate); ok {
@@ -97,7 +99,8 @@ func (d *Dao[T]) Create(data any) (int64, error) {
 	return result.LastInsertId()
 }
 
-// CreateRaw 插入单条记录，返回 *SQL 供用户继续链式操作
+// CreateRaw inserts a single record and returns the SQL builder for chaining
+// (e.g. ON CONFLICT, RETURNING).
 func (d *Dao[T]) CreateRaw(data any) *SQL {
 	if p := d.resolve(data); p != nil {
 		if h, ok := any(p).(BeforeCreate); ok {
@@ -112,21 +115,20 @@ func (d *Dao[T]) CreateRaw(data any) *SQL {
 	return d.q.Insert(d.table, data)
 }
 
-// BatchRaw 批量插入多条记录，返回 *SQL 供用户继续链式操作（如 ON CONFLICT）
+// BatchRaw bulk-inserts multiple records and returns a SQL builder for chaining.
 func (d *Dao[T]) BatchRaw(entities []T) *SQL {
 	if len(entities) == 0 {
 		clone := d.q.copy()
-		clone.err = errors.New("dao batch create: empty entities")
+		clone.err = errors.New("dba: dao batch create: empty entities")
 		return clone
 	}
 
-	// 处理钩子并收集实体
 	processed := make([]any, len(entities))
 	for i := range entities {
 		if h, ok := any(&entities[i]).(BeforeCreate); ok {
 			if err := h.BeforeCreate(); err != nil {
 				clone := d.q.copy()
-				clone.err = fmt.Errorf("dao batch create: entity %d hook error: %w", i, err)
+				clone.err = fmt.Errorf("dba: dao batch create: entity %d hook error: %w", i, err)
 				return clone
 			}
 		}
@@ -136,12 +138,12 @@ func (d *Dao[T]) BatchRaw(entities []T) *SQL {
 	return d.q.BatchInsert(d.table, processed)
 }
 
-// Batch 批量插入多条记录，返回影响行数
+// Batch bulk-inserts multiple records and returns affected rows.
 func (d *Dao[T]) Batch(entities []T) (int64, error) {
 	return execRowsAffected(d.BatchRaw(entities))
 }
 
-// Update 根据条件更新记录，返回影响行数
+// Update updates records matching the given condition.
 func (d *Dao[T]) Update(data any, where string, args ...any) (int64, error) {
 	if p := d.resolve(data); p != nil {
 		if h, ok := any(p).(BeforeUpdate); ok {
@@ -149,18 +151,18 @@ func (d *Dao[T]) Update(data any, where string, args ...any) (int64, error) {
 				return 0, err
 			}
 		}
-		data = *p // hook 可能修改了字段，用修改后的值
+		data = *p
 	}
 
 	return execRowsAffected(d.q.Update(d.table, data, where, args...))
 }
 
-// Delete 根据条件删除记录，返回影响行数
+// Delete deletes records matching the given condition.
 func (d *Dao[T]) Delete(where string, args ...any) (int64, error) {
 	return execRowsAffected(d.q.Delete(d.table, where, args...))
 }
 
-// GetByID 根据主键获取单条记录
+// GetByID fetches a single record by primary key.
 func (d *Dao[T]) GetByID(id any) (*T, error) {
 	var v T
 	found, err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+d.quotedPK+" = #{1}", id).Get(&v)
@@ -170,7 +172,7 @@ func (d *Dao[T]) GetByID(id any) (*T, error) {
 	return &v, err
 }
 
-// Get 根据条件获取单条记录
+// Get fetches a single record by condition.
 func (d *Dao[T]) Get(where string, args ...any) (*T, error) {
 	var v T
 	found, err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).Get(&v)
@@ -180,33 +182,33 @@ func (d *Dao[T]) Get(where string, args ...any) (*T, error) {
 	return &v, err
 }
 
-// List 根据条件获取多条记录
+// List fetches multiple records by condition.
 func (d *Dao[T]) List(where string, args ...any) ([]T, error) {
 	var list []T
 	err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).List(&list)
 	return list, err
 }
 
-// All 获取全部记录
+// All fetches all records from the table.
 func (d *Dao[T]) All() ([]T, error) {
 	var list []T
 	err := d.q.Add("SELECT * FROM " + d.quotedTbl).List(&list)
 	return list, err
 }
 
-// Count 根据条件计数
+// Count returns the number of matching records.
 func (d *Dao[T]) Count(where string, args ...any) (int64, error) {
 	count, _, err := Scalar[int64](d.q.Add("SELECT COUNT(1) FROM "+d.quotedTbl+" WHERE "+where, args...))
 	return count, err
 }
 
-// CountAll 全表计数
+// CountAll returns the total number of records in the table.
 func (d *Dao[T]) CountAll() (int64, error) {
 	count, _, err := Scalar[int64](d.q.Add("SELECT COUNT(1) FROM " + d.quotedTbl))
 	return count, err
 }
 
-// Exists 判断是否存在满足条件的记录
+// Exists returns true if at least one matching record exists.
 func (d *Dao[T]) Exists(where string, args ...any) (bool, error) {
 	count, err := d.Count(where, args...)
 	return count > 0, err
@@ -223,7 +225,6 @@ func (d *Dao[T]) resolve(data any) *T {
 	}
 }
 
-// execRowsAffected 执行并返回影响行数
 func execRowsAffected(q *SQL) (int64, error) {
 	result, err := q.Exec()
 	if err != nil {

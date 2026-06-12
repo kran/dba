@@ -129,6 +129,8 @@ q.Delete("users", "id = #{1}", 42)
 // DELETE FROM "users" WHERE id = $1
 ```
 
+`${I}` is an optional slot between `INSERT` and `INTO` — use `Var(dba.I, "OR IGNORE")` to generate `INSERT OR IGNORE INTO`.
+
 ### Expr — raw SQL in values
 
 ```go
