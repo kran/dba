@@ -1,4 +1,4 @@
-module codeberg.org/kran/dba
+module github.com/kran/dba
 
 go 1.25.7
 

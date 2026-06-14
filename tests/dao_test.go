@@ -1,8 +1,8 @@
 package dba_test
 
 import (
-	"codeberg.org/kran/dba"
 	"errors"
+	"github.com/kran/dba"
 	"testing"
 )
 

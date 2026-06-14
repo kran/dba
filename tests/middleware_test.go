@@ -2,9 +2,9 @@ package dba_test
 
 import (
 	"bytes"
-	"codeberg.org/kran/dba"
 	"context"
 	"errors"
+	"github.com/kran/dba"
 	"log/slog"
 	"strings"
 	"sync"

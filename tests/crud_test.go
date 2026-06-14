@@ -1,8 +1,8 @@
 package dba_test
 
 import (
-	"codeberg.org/kran/dba"
 	gosql "database/sql"
+	"github.com/kran/dba"
 	"testing"
 )
 
