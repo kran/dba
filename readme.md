@@ -5,7 +5,7 @@
 ## Quick Example
 
 ```go
-q := dba.New(db)
+q := dba.NewFromSqlx(db)
 
 // One base query, three uses — none of them mutate the original
 base := q.Add("SELECT ${F:*} FROM users ${where:} ${order:ORDER BY id}")
@@ -171,7 +171,7 @@ type Profile struct {
 ## Pagination
 
 ```go
-q := dba.New(db).Add("SELECT ${F:*} FROM users ${where:}").
+q := dba.NewFromSqlx(db).Add("SELECT ${F:*} FROM users ${where:}").
     AddIf(status != "", "WHERE status = #{1}", status).
     Add("ORDER BY id DESC")
 

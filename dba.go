@@ -80,9 +80,9 @@ type SQL struct {
 	copyId     int
 }
 
-// New creates a SQL builder from a sqlx.DB. Auto-detects driver for
+// NewFromSqlx creates a SQL builder from a sqlx.DB. Auto-detects driver for
 // placeholder format and identifier quoting.
-func New(db *sqlx.DB) *SQL {
+func NewFromSqlx(db *sqlx.DB) *SQL {
 	driver := db.DriverName()
 	quoter := AnsiQuoter
 	format := QmarkFormat
@@ -106,6 +106,25 @@ func New(db *sqlx.DB) *SQL {
 		driverName: driver,
 		copyId:     0,
 	}
+}
+
+// Open connects to a database and returns a SQL builder. It is a
+// convenience over sqlx.Connect + NewFromSqlx.
+func Open(driver, dsn string) (*SQL, error) {
+	db, err := sqlx.Connect(driver, dsn)
+	if err != nil {
+		return nil, err
+	}
+	return NewFromSqlx(db), nil
+}
+
+func (d *SQL) DB() *sqlx.DB { return d.rawDB }
+
+func (d *SQL) Close() error {
+	if d.rawDB != nil {
+		return d.rawDB.Close()
+	}
+	return nil
 }
 
 func (d *SQL) copy() *SQL {
