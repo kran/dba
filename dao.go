@@ -99,9 +99,9 @@ func (d *Dao[T]) Create(data any) (int64, error) {
 	return result.LastInsertId()
 }
 
-// CreateRaw inserts a single record and returns the SQL builder for chaining
+// RawCreate inserts a single record and returns the SQL builder for chaining
 // (e.g. ON CONFLICT, RETURNING).
-func (d *Dao[T]) CreateRaw(data any) *SQL {
+func (d *Dao[T]) RawCreate(data any) *SQL {
 	if p := d.resolve(data); p != nil {
 		if h, ok := any(p).(BeforeCreate); ok {
 			if err := h.BeforeCreate(); err != nil {
@@ -115,8 +115,16 @@ func (d *Dao[T]) CreateRaw(data any) *SQL {
 	return d.q.Insert(d.table, data)
 }
 
-// BatchRaw bulk-inserts multiple records and returns a SQL builder for chaining.
-func (d *Dao[T]) BatchRaw(entities []T) *SQL {
+func (d *Dao[T]) RawSelect(where string, args ...any) *SQL {
+	return d.q.Select(d.table, where, args...)
+}
+
+func (d *Dao[T]) Page(page, size int, where string, args ...any) ([]T, int64, error) {
+	return Page[T](d.RawSelect(where, args...), page, size)
+}
+
+// RawBatch bulk-inserts multiple records and returns a SQL builder for chaining.
+func (d *Dao[T]) RawBatch(entities []T) *SQL {
 	if len(entities) == 0 {
 		clone := d.q.copy()
 		clone.err = errors.New("dba: dao batch create: empty entities")
@@ -140,7 +148,7 @@ func (d *Dao[T]) BatchRaw(entities []T) *SQL {
 
 // Batch bulk-inserts multiple records and returns affected rows.
 func (d *Dao[T]) Batch(entities []T) (int64, error) {
-	return execRowsAffected(d.BatchRaw(entities))
+	return execRowsAffected(d.RawBatch(entities))
 }
 
 // Update updates records matching the given condition.

@@ -299,9 +299,9 @@ func TestDao_CustomPrimaryKey(t *testing.T) {
 
 	dao := dba.NewDao[Config](q, "configs").PrimaryKey("key")
 
-	// CustomPK 非 int64，用 CreateRaw 代替
-	dao.CreateRaw(Config{Key: "theme", Val: "dark"}).Exec()
-	dao.CreateRaw(Config{Key: "lang", Val: "zh"}).Exec()
+	// CustomPK 非 int64，用 RawCreate 代替
+	dao.RawCreate(Config{Key: "theme", Val: "dark"}).Exec()
+	dao.RawCreate(Config{Key: "lang", Val: "zh"}).Exec()
 
 	cfg, err := dao.GetByID("theme")
 	if err != nil {
@@ -315,7 +315,7 @@ func TestDao_CustomPrimaryKey(t *testing.T) {
 func TestDao_CreateRaw(t *testing.T) {
 	dao, _ := setupDao(t)
 
-	result, err := dao.CreateRaw(Item{Name: "raw", Val: 5}).Exec()
+	result, err := dao.RawCreate(Item{Name: "raw", Val: 5}).Exec()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestDao_Hook_OnUpdate_Map_SkipsHook(t *testing.T) {
 
 func TestDao_Hook_CreateRaw_ModifiesField(t *testing.T) {
 	dao := setupHookDao(t)
-	result, err := dao.CreateRaw(HookItem{Name: "raw", Val: 5}).Exec()
+	result, err := dao.RawCreate(HookItem{Name: "raw", Val: 5}).Exec()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestDao_Hook_CreateRaw_ModifiesField(t *testing.T) {
 
 func TestDao_Hook_CreateRaw_Error(t *testing.T) {
 	dao := setupHookDao(t)
-	_, err := dao.CreateRaw(HookItem{Name: "", Val: 1}).Exec()
+	_, err := dao.RawCreate(HookItem{Name: "", Val: 1}).Exec()
 	if err == nil || err.Error() != "name is required" {
 		t.Errorf("expected 'name is required', got %v", err)
 	}
