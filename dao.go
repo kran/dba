@@ -76,13 +76,10 @@ func (d *Dao[T]) Q() *SQL {
 // Create inserts a single record and returns the generated primary key.
 // On PostgreSQL, uses RETURNING. On other drivers, uses LastInsertId.
 func (d *Dao[T]) Create(data any) (int64, error) {
-	if p := d.resolve(data); p != nil {
-		if h, ok := any(p).(BeforeCreate); ok {
-			if err := h.BeforeCreate(); err != nil {
-				return 0, err
-			}
+	if h, ok := data.(BeforeCreate); ok {
+		if err := h.BeforeCreate(); err != nil {
+			return 0, err
 		}
-		data = *p
 	}
 
 	driver := d.q.driverName
@@ -102,15 +99,12 @@ func (d *Dao[T]) Create(data any) (int64, error) {
 // RawCreate inserts a single record and returns the SQL builder for chaining
 // (e.g. ON CONFLICT, RETURNING).
 func (d *Dao[T]) RawCreate(data any) *SQL {
-	if p := d.resolve(data); p != nil {
-		if h, ok := any(p).(BeforeCreate); ok {
-			if err := h.BeforeCreate(); err != nil {
-				clone := d.q.copy()
-				clone.err = err
-				return clone
-			}
+	if h, ok := data.(BeforeCreate); ok {
+		if err := h.BeforeCreate(); err != nil {
+			clone := d.q.copy()
+			clone.err = err
+			return clone
 		}
-		data = *p
 	}
 	return d.q.Insert(d.table, data)
 }
@@ -153,13 +147,10 @@ func (d *Dao[T]) Batch(entities []T) (int64, error) {
 
 // Update updates records matching the given condition.
 func (d *Dao[T]) Update(data any, where string, args ...any) (int64, error) {
-	if p := d.resolve(data); p != nil {
-		if h, ok := any(p).(BeforeUpdate); ok {
-			if err := h.BeforeUpdate(); err != nil {
-				return 0, err
-			}
+	if h, ok := data.(BeforeUpdate); ok {
+		if err := h.BeforeUpdate(); err != nil {
+			return 0, err
 		}
-		data = *p
 	}
 
 	return execRowsAffected(d.q.Update(d.table, data, where, args...))
@@ -220,17 +211,6 @@ func (d *Dao[T]) CountAll() (int64, error) {
 func (d *Dao[T]) Exists(where string, args ...any) (bool, error) {
 	count, err := d.Count(where, args...)
 	return count > 0, err
-}
-
-func (d *Dao[T]) resolve(data any) *T {
-	switch v := data.(type) {
-	case T:
-		return &v
-	case *T:
-		return v
-	default:
-		return nil
-	}
 }
 
 func execRowsAffected(q *SQL) (int64, error) {
