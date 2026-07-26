@@ -22,16 +22,19 @@ type Dao[T any] struct {
 	quotedTbl string
 	pk        string
 	quotedPK  string
+	tableDef  *TableDef
 }
 
 // NewDao creates a Dao bound to the given table. Default primary key is "id".
 func NewDao[T any](q *SQL, table string) *Dao[T] {
+	tableDef := Table(table, "").Struct(new(T))
 	return &Dao[T]{
 		q:         q,
 		table:     table,
 		quotedTbl: q.quoter(table),
 		pk:        "id",
 		quotedPK:  q.quoter("id"),
+		tableDef:  tableDef,
 	}
 }
 
@@ -42,7 +45,12 @@ func (d *Dao[T]) copy() *Dao[T] {
 		quotedTbl: d.quotedTbl,
 		pk:        d.pk,
 		quotedPK:  d.quotedPK,
+		tableDef:  d.tableDef,
 	}
+}
+
+func (d *Dao[T]) TableDef(alias string) map[string]Node {
+	return d.tableDef.Alias(alias).Build()
 }
 
 // PrimaryKey returns a new Dao with the given primary key column.
