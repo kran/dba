@@ -54,8 +54,11 @@ func (t *TableDef) Build() map[string]Node {
 	m := make(map[string]Node)
 
 	m[t.table] = Node{RawSQL: "@{1}", Args: []any{t.table}}
+	m[t.table+".*"] = Node{RawSQL: "@{1}.*", Args: []any{t.table}}
+
 	if t.alias != "" {
 		m[t.alias] = Node{RawSQL: "@{1} AS @{2}", Args: []any{t.table, t.alias}}
+		m[t.alias+".*"] = Node{RawSQL: "@{1}.*", Args: []any{t.alias}}
 	}
 
 	for _, f := range t.fields {
@@ -64,11 +67,6 @@ func (t *TableDef) Build() map[string]Node {
 		}
 		m[t.table+"."+f] = Node{RawSQL: "@{1}.@{2}", Args: []any{t.table, f}}
 	}
-
-	if t.alias != "" {
-		m[t.alias+".*"] = Node{RawSQL: "@{1}.*", Args: []any{t.alias}}
-	}
-	m[t.table+".*"] = Node{RawSQL: "@{1}.*", Args: []any{t.table}}
 
 	return m
 }

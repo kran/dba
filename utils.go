@@ -41,9 +41,7 @@ func Scalar[T any](d *SQL) (T, bool, error) {
 	return v, found, err
 }
 
-// Page executes a paginated query. Internally substitutes F with COUNT(1)
-// for the total count, then adds LIMIT/OFFSET for the data page.
-// The query must contain ${F:...} or have Var(F, ...) registered.
+// The query must contain ${F:...} so that Page can swap the field list for COUNT(1).
 func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 	if page < 1 {
 		page = 1
@@ -60,11 +58,8 @@ func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 			break
 		}
 	}
-
 	if !hasF {
-		if _, ok := q.varNodes[F]; !ok {
-			return nil, 0, fmt.Errorf("dba: page requires ${F:...} or Var(F, ...) in query")
-		}
+		return nil, 0, fmt.Errorf("dba: page requires ${%s:...} in query", F)
 	}
 
 	total, _, err := Scalar[int64](q.Var(F, "COUNT(1)"))
