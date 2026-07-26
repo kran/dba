@@ -364,7 +364,7 @@ func setupHookDao(t *testing.T) *dba.Dao[HookItem] {
 
 func TestDao_Hook_OnCreate_ModifiesField(t *testing.T) {
 	dao := setupHookDao(t)
-	id, err := dao.Create(HookItem{Name: "alice", Val: 1})
+	id, err := dao.Create(&HookItem{Name: "alice", Val: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestDao_Hook_OnCreate_Pointer(t *testing.T) {
 
 func TestDao_Hook_OnCreate_Error(t *testing.T) {
 	dao := setupHookDao(t)
-	_, err := dao.Create(HookItem{Name: "", Val: 1})
+	_, err := dao.Create(&HookItem{Name: "", Val: 1})
 	if err == nil || err.Error() != "name is required" {
 		t.Errorf("expected 'name is required', got %v", err)
 	}
@@ -408,9 +408,9 @@ func TestDao_Hook_OnCreate_Map_SkipsHook(t *testing.T) {
 
 func TestDao_Hook_OnUpdate_Error(t *testing.T) {
 	dao := setupHookDao(t)
-	dao.Create(HookItem{Name: "x", Val: 1})
+	dao.Create(&HookItem{Name: "x", Val: 1})
 
-	_, err := dao.Update(HookItem{Name: "x", Val: -1}, "id = #{1}", 1)
+	_, err := dao.Update(&HookItem{Name: "x", Val: -1}, "id = #{1}", 1)
 	if err == nil || err.Error() != "val must be non-negative" {
 		t.Errorf("expected 'val must be non-negative', got %v", err)
 	}
@@ -418,7 +418,7 @@ func TestDao_Hook_OnUpdate_Error(t *testing.T) {
 
 func TestDao_Hook_OnUpdate_Map_SkipsHook(t *testing.T) {
 	dao := setupHookDao(t)
-	dao.Create(HookItem{Name: "x", Val: 1})
+	dao.Create(&HookItem{Name: "x", Val: 1})
 
 	affected, err := dao.Update(map[string]any{"val": -1}, "id = #{1}", 1)
 	if err != nil {
@@ -435,7 +435,7 @@ func TestDao_Hook_OnUpdate_Map_SkipsHook(t *testing.T) {
 
 func TestDao_Hook_CreateRaw_ModifiesField(t *testing.T) {
 	dao := setupHookDao(t)
-	result, err := dao.RawCreate(HookItem{Name: "raw", Val: 5}).Exec()
+	result, err := dao.RawCreate(&HookItem{Name: "raw", Val: 5}).Exec()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestDao_Hook_CreateRaw_ModifiesField(t *testing.T) {
 
 func TestDao_Hook_CreateRaw_Error(t *testing.T) {
 	dao := setupHookDao(t)
-	_, err := dao.RawCreate(HookItem{Name: "", Val: 1}).Exec()
+	_, err := dao.RawCreate(&HookItem{Name: "", Val: 1}).Exec()
 	if err == nil || err.Error() != "name is required" {
 		t.Errorf("expected 'name is required', got %v", err)
 	}

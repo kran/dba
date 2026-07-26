@@ -32,7 +32,7 @@ func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 	hasF := false
 	needle := "${" + F
 	for _, node := range q.mainNodes {
-		if strings.Contains(node.rawSQL, needle) {
+		if strings.Contains(node.RawSQL, needle) {
 			hasF = true
 			break
 		}
@@ -102,7 +102,7 @@ func ToMap(model any) map[string]any {
 	}
 
 	if rv.Kind() != reflect.Struct {
-		panic("named args source must be a struct or map[string]any")
+		panic("named Args source must be a struct or map[string]any")
 	}
 
 	structMap := mapper.TypeMap(rv.Type())

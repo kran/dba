@@ -188,13 +188,10 @@ func TestBuild_VarDefault_EmptyString(t *testing.T) {
 
 func TestBuild_VarNotSet_NoDefault(t *testing.T) {
 	q, _ := newQ(t)
-	// ${key} 没有默认值且未设置 → 什么都不输出
-	sql, _, err := q.Add("SELECT * ${missing} FROM t").ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "SELECT *  FROM t" {
-		t.Errorf("got %q", sql)
+	// ${key} 无默认值且未设置 → 报错
+	_, _, err := q.Add("SELECT * ${missing} FROM t").ToSQL()
+	if err == nil {
+		t.Fatal("expected error for undefined variable ${missing}")
 	}
 }
 

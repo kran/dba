@@ -59,15 +59,15 @@ func MySQLQuoter(s string) string { return "`" + strings.ReplaceAll(s, "`", "``"
 // AnsiQuoter wraps identifiers in double quotes.
 func AnsiQuoter(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-type node struct {
-	rawSQL string
-	args   []any
+type Node struct {
+	RawSQL string
+	Args   []any
 }
 
 // SQL is an immutable, chainable query builder backed by sqlx.
 type SQL struct {
-	mainNodes []node
-	varNodes  map[string]node
+	mainNodes []Node
+	varNodes  map[string]Node
 
 	db         sqlx.ExtContext
 	rawDB      *sqlx.DB
@@ -96,8 +96,8 @@ func NewFromSqlx(db *sqlx.DB) *SQL {
 	}
 
 	return &SQL{
-		mainNodes:  make([]node, 0),
-		varNodes:   make(map[string]node),
+		mainNodes:  make([]Node, 0),
+		varNodes:   make(map[string]Node),
 		db:         db,
 		rawDB:      db,
 		ctx:        context.Background(),
@@ -129,8 +129,8 @@ func (d *SQL) Close() error {
 
 func (d *SQL) copy() *SQL {
 	clone := &SQL{
-		mainNodes:  make([]node, len(d.mainNodes)),
-		varNodes:   make(map[string]node),
+		mainNodes:  make([]Node, len(d.mainNodes)),
+		varNodes:   make(map[string]Node),
 		db:         d.db,
 		rawDB:      d.rawDB,
 		ctx:        d.ctx,
@@ -212,7 +212,7 @@ func (d *SQL) Add(query string, args ...any) *SQL {
 	if clone.err != nil {
 		return clone
 	}
-	clone.mainNodes = append(clone.mainNodes, node{rawSQL: query, args: args})
+	clone.mainNodes = append(clone.mainNodes, Node{RawSQL: query, Args: args})
 	return clone
 }
 
@@ -230,7 +230,18 @@ func (d *SQL) Var(key string, query string, args ...any) *SQL {
 	if clone.err != nil {
 		return clone
 	}
-	clone.varNodes[key] = node{rawSQL: query, args: args}
+	clone.varNodes[key] = Node{RawSQL: query, Args: args}
+	return clone
+}
+
+func (d *SQL) Vars(vars map[string]Node) *SQL {
+	clone := d.copy()
+	if clone.err != nil {
+		return clone
+	}
+	for k, v := range vars {
+		clone.varNodes[k] = v
+	}
 	return clone
 }
 
@@ -249,9 +260,9 @@ func (d *SQL) build() (string, []any, error) {
 		sqlBuilder.WriteString(s)
 	}
 
-	var parse func(n node) error
-	parse = func(n node) error {
-		str := n.rawSQL
+	var parse func(n Node) error
+	parse = func(n Node) error {
+		str := n.RawSQL
 		i := 0
 		for i < len(str) {
 			start := strings.IndexByte(str[i:], '{')
@@ -289,7 +300,7 @@ func (d *SQL) build() (string, []any, error) {
 
 			switch prefix {
 			case '#':
-				argVal, err := resolveArg(n.args, content)
+				argVal, err := resolveArg(n.Args, content)
 				if err != nil {
 					return err
 				}
@@ -327,14 +338,18 @@ func (d *SQL) build() (string, []any, error) {
 					if err := parse(varNode); err != nil {
 						return err
 					}
-				} else if len(parts) == 2 {
-					if err := parse(node{rawSQL: strings.TrimSpace(parts[1])}); err != nil {
-						return err
+				} else {
+					if len(parts) == 2 {
+						if err := parse(Node{RawSQL: strings.TrimSpace(parts[1])}); err != nil {
+							return err
+						}
+					} else {
+						return fmt.Errorf("dba: undefined variable ${%s}", key)
 					}
 				}
 
 			case '@':
-				val, err := resolveArg(n.args, content)
+				val, err := resolveArg(n.Args, content)
 				if err != nil {
 					return err
 				} else if val == nil {
@@ -343,7 +358,7 @@ func (d *SQL) build() (string, []any, error) {
 				sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", val)))
 
 			case '!':
-				val, err := resolveArg(n.args, content)
+				val, err := resolveArg(n.Args, content)
 				if err != nil {
 					return err
 				} else if val == nil {
@@ -633,7 +648,7 @@ func (d *SQL) Insert(table string, data any) *SQL {
 			placeholders[i] = fmt.Sprintf("#{%d}", len(bindArgs))
 		}
 	}
-	query := fmt.Sprintf("INSERT ${"+I+"} INTO %s (%s) VALUES (%s)",
+	query := fmt.Sprintf("INSERT ${"+I+":} INTO %s (%s) VALUES (%s)",
 		d.quoter(table),
 		strings.Join(quotedCols, ", "),
 		strings.Join(placeholders, ", "),
