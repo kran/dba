@@ -15,9 +15,21 @@ func Table(table, alias string) *TableDef {
 	return &TableDef{table: table, alias: alias}
 }
 
+func (t *TableDef) Alias(alias string) *TableDef {
+	t.alias = alias
+	return t
+}
+
 // Fields registers the columns included in the alias.* expansion.
 func (t *TableDef) Fields(fields ...string) *TableDef {
 	t.fields = fields
+	return t
+}
+
+// Struct extracts column names from the model's db tags, replacing any
+// previously set fields. Embed structs (like Timestamped) are expanded.
+func (t *TableDef) Struct(model any) *TableDef {
+	t.fields, _, _ = ToKeyValue(model, false)
 	return t
 }
 
@@ -42,14 +54,20 @@ func (t *TableDef) Build() map[string]Node {
 	m := make(map[string]Node)
 
 	m[t.table] = Node{RawSQL: "@{1}", Args: []any{t.table}}
-	m[t.alias] = Node{RawSQL: "@{1} AS @{2}", Args: []any{t.table, t.alias}}
+	if t.alias != "" {
+		m[t.alias] = Node{RawSQL: "@{1} AS @{2}", Args: []any{t.table, t.alias}}
+	}
 
 	for _, f := range t.fields {
-		m[t.alias+"."+f] = Node{RawSQL: "@{1}.@{2}", Args: []any{t.alias, f}}
+		if t.alias != "" {
+			m[t.alias+"."+f] = Node{RawSQL: "@{1}.@{2}", Args: []any{t.alias, f}}
+		}
 		m[t.table+"."+f] = Node{RawSQL: "@{1}.@{2}", Args: []any{t.table, f}}
 	}
 
-	m[t.alias+".*"] = Node{RawSQL: "@{1}.*", Args: []any{t.alias}}
+	if t.alias != "" {
+		m[t.alias+".*"] = Node{RawSQL: "@{1}.*", Args: []any{t.alias}}
+	}
 	m[t.table+".*"] = Node{RawSQL: "@{1}.*", Args: []any{t.table}}
 
 	return m

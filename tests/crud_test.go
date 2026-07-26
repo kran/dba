@@ -151,7 +151,7 @@ func TestInsert_Omitempty_NonZeroID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT  INTO "users" ("age", "id", "name") VALUES ($1, $2, $3)`
+	want := `INSERT  INTO "users" ("id", "name", "age") VALUES ($1, $2, $3)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -263,7 +263,7 @@ func TestInsert_NullString_ValidTrueWithValue_Keeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT  INTO "users" ("age", "bio", "name", "score") VALUES ($1, $2, $3, $4)`
+	want := `INSERT  INTO "users" ("name", "bio", "age", "score") VALUES ($1, $2, $3, $4)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
@@ -272,7 +272,7 @@ func TestInsert_NullString_ValidTrueWithValue_Keeps(t *testing.T) {
 	bioHello := gosql.NullString{String: "hello", Valid: true}
 	nameAlice := gosql.NullString{String: "alice", Valid: true}
 	zeroNI := gosql.NullInt64{}
-	if len(args) != 4 || args[0] != age25 || args[1] != bioHello || args[2] != nameAlice || args[3] != zeroNI {
+	if len(args) != 4 || args[0] != nameAlice || args[1] != bioHello || args[2] != age25 || args[3] != zeroNI {
 		t.Errorf("args: %v", args)
 	}
 }
@@ -348,16 +348,16 @@ func TestInsert_NullablePointer_ValidTrueKeeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT  INTO "users" ("age", "name") VALUES ($1, $2)`
+	want := `INSERT  INTO "users" ("name", "age") VALUES ($1, $2)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
 
-	if len(args) != 2 || args[0] != 30 {
+	if len(args) != 2 || args[1] != 30 {
 		t.Errorf("args: %v", args)
 	}
-	if ptr, ok := args[1].(*gosql.NullString); !ok || *ptr != (gosql.NullString{String: "carol", Valid: true}) {
-		t.Errorf("args[1]: %v", args[1])
+	if ptr, ok := args[0].(*gosql.NullString); !ok || *ptr != (gosql.NullString{String: "carol", Valid: true}) {
+		t.Errorf("args[0]: %v", args[0])
 	}
 }
 
@@ -379,11 +379,11 @@ func TestInsert_EmbeddedStruct_Flattens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT  INTO "users" ("created_at", "name") VALUES ($1, $2)`
+	want := `INSERT  INTO "users" ("name", "created_at") VALUES ($1, $2)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
-	if len(args) != 2 || args[0] != "" || args[1] != "alice" {
+	if len(args) != 2 || args[1] != "" || args[0] != "alice" {
 		t.Errorf("args: %v", args)
 	}
 }
@@ -400,12 +400,12 @@ func TestInsert_EmbeddedStruct_WithNullString(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT  INTO "users" ("created_at", "name") VALUES ($1, $2)`
+	want := `INSERT  INTO "users" ("name", "created_at") VALUES ($1, $2)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
 	nameBob := gosql.NullString{String: "bob", Valid: true}
-	if len(args) != 2 || args[0] != "" || args[1] != nameBob {
+	if len(args) != 2 || args[1] != "" || args[0] != nameBob {
 		t.Errorf("args: %v", args)
 	}
 }

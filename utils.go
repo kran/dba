@@ -2,7 +2,6 @@ package dba
 
 import (
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -10,6 +9,30 @@ import (
 
 	"github.com/jmoiron/sqlx/reflectx"
 )
+
+// IndexBy converts a slice into a map keyed by fn(element).
+// Returns an error if duplicate keys are found.
+func IndexBy[T any, K comparable](slice []T, fn func(T) K) (map[K]T, error) {
+	m := make(map[K]T, len(slice))
+	for _, v := range slice {
+		key := fn(v)
+		if _, ok := m[key]; ok {
+			return nil, fmt.Errorf("dba: IndexBy duplicate key %v", key)
+		}
+		m[key] = v
+	}
+	return m, nil
+}
+
+// GroupBy groups slice elements by fn(element): 1 key → N values.
+func GroupBy[T any, K comparable](slice []T, fn func(T) K) map[K][]T {
+	m := make(map[K][]T, len(slice))
+	for _, v := range slice {
+		key := fn(v)
+		m[key] = append(m[key], v)
+	}
+	return m
+}
 
 // Scalar returns a single scalar value from a query.
 func Scalar[T any](d *SQL) (T, bool, error) {
@@ -86,31 +109,50 @@ func IsOk(v any) bool {
 	}
 }
 
-// ToMap converts a struct or map to map[string]any using db tags.
-// Panics if model is neither a struct nor a map.
-func ToMap(model any) map[string]any {
-	if m, ok := model.(map[string]any); ok {
-		return m
-	}
-
+func ToKeyValue(model any, omitempty bool) ([]string, []any, error) {
 	rv := reflect.ValueOf(model)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
-			return make(map[string]any)
+			return []string{}, []any{}, nil
 		}
 		rv = rv.Elem()
 	}
 
-	if rv.Kind() != reflect.Struct {
-		panic("named Args source must be a struct or map[string]any")
+	// ── Map branch ──────────────────────────────────────────
+	if rv.Kind() == reflect.Map {
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, nil, fmt.Errorf("dba: ToKV map key must be string, got %s", rv.Type().Key().Kind())
+		}
+		keys := rv.MapKeys()
+		sort.Slice(keys, func(i, j int) bool {
+			return keys[i].String() < keys[j].String()
+		})
+		result := make([]string, len(keys))
+		vals := make([]any, len(keys))
+		for i, k := range keys {
+			result[i] = k.String()
+			vals[i] = rv.MapIndex(k).Interface()
+		}
+		return result, vals, nil
 	}
 
-	structMap := mapper.TypeMap(rv.Type())
-	result := make(map[string]any, len(structMap.Index))
+	// ── Struct branch ───────────────────────────────────────
+	if rv.Kind() != reflect.Struct {
+		return nil, nil, fmt.Errorf("dba: ToKV expects struct or map[string]any, got %s", rv.Kind())
+	}
+
 	valuableType := reflect.TypeOf((*driver.Valuer)(nil)).Elem()
+	structMap := mapper.TypeMap(rv.Type())
+	keys := make([]string, 0, len(structMap.Index))
+	vals := make([]any, 0, len(structMap.Index))
 
 	for _, fi := range structMap.Index {
 		if fi.Name == "-" || fi.Name == "" {
+			continue
+		}
+
+		// skip unexported fields
+		if !fi.Field.IsExported() {
 			continue
 		}
 
@@ -129,7 +171,8 @@ func ToMap(model any) map[string]any {
 			continue
 		}
 
-		if _, hasOmitempty := fi.Options["omitempty"]; hasOmitempty {
+		// omitempty: skip zero-valued fields
+		if _, hasOmitempty := fi.Options["omitempty"]; hasOmitempty && omitempty {
 			v := val
 			for v.Kind() == reflect.Ptr && !v.IsNil() {
 				v = v.Elem()
@@ -139,28 +182,8 @@ func ToMap(model any) map[string]any {
 			}
 		}
 
-		result[fi.Name] = val.Interface()
-	}
-
-	return result
-}
-
-// ExtractColsVals extracts sorted column names and values from a struct or map.
-func ExtractColsVals(data any) (cols []string, vals []any, err error) {
-	m := ToMap(data)
-	if len(m) == 0 {
-		return nil, nil, errors.New("dba: no columns found or data must be a struct/map")
-	}
-
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	vals = make([]any, len(keys))
-	for i, k := range keys {
-		vals[i] = m[k]
+		keys = append(keys, fi.Name)
+		vals = append(vals, val.Interface())
 	}
 
 	return keys, vals, nil
