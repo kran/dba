@@ -60,7 +60,7 @@ func TestTableBuild_NoFields(t *testing.T) {
 }
 
 func TestTableVarsExpansion(t *testing.T) {
-	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Format(dba.QmarkFormat)
+	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formater(dba.QmarkFormat)
 
 	q = q.Vars(dba.Table("customers", "c").Fields("id", "name").Build())
 	q = q.Add("SELECT ${c.*} FROM ${c}")
@@ -77,7 +77,7 @@ func TestTableVarsExpansion(t *testing.T) {
 }
 
 func TestTableVarsJoin(t *testing.T) {
-	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Format(dba.QmarkFormat)
+	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formater(dba.QmarkFormat)
 
 	q = q.Vars(dba.Table("users", "u").Fields("id", "name").Build())
 	q = q.Vars(dba.Table("profiles", "p").Fields("user_id", "email").Build())

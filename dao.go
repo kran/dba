@@ -1,6 +1,7 @@
 package dba
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -49,20 +50,26 @@ func (d *Dao[T]) copy() *Dao[T] {
 	}
 }
 
-func (d *Dao[T]) TableDef(alias string) map[string]Node {
+func (d *Dao[T]) Vars(alias string) map[string]Node {
 	return d.tableDef.Alias(alias).Build()
 }
 
-// PrimaryKey returns a new Dao with the given primary key column.
-func (d *Dao[T]) PrimaryKey(pk string) *Dao[T] {
+func (d *Dao[T]) WithCtx(ctx context.Context) *Dao[T] {
+	clone := d.copy()
+	clone.q = clone.q.WithCtx(ctx)
+	return clone
+}
+
+// PK returns a new Dao with the given primary key column.
+func (d *Dao[T]) PK(pk string) *Dao[T] {
 	clone := d.copy()
 	clone.pk = pk
 	clone.quotedPK = d.q.quoter(pk)
 	return clone
 }
 
-// TableName returns a new Dao with the given table name.
-func (d *Dao[T]) TableName(table string) *Dao[T] {
+// Table returns a new Dao with the given table name.
+func (d *Dao[T]) Table(table string) *Dao[T] {
 	clone := d.copy()
 	clone.table = table
 	clone.quotedTbl = d.q.quoter(table)
@@ -76,8 +83,8 @@ func (d *Dao[T]) WithTx(tx *SQL) *Dao[T] {
 	return clone
 }
 
-// Q returns the underlying SQL builder for custom queries.
-func (d *Dao[T]) Q() *SQL {
+// SQL returns the underlying SQL builder for custom queries.
+func (d *Dao[T]) SQL() *SQL {
 	return d.q
 }
 

@@ -26,7 +26,7 @@ func (t *TableDef) Fields(fields ...string) *TableDef {
 	return t
 }
 
-// Struct extracts column names from the model's db tags, replacing any
+// Struct extracts column names from the model's executor tags, replacing any
 // previously set fields. Embed structs (like Timestamped) are expanded.
 func (t *TableDef) Struct(model any) *TableDef {
 	t.fields, _, _ = ToKeyValue(model, false)

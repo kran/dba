@@ -297,7 +297,7 @@ func TestDao_CustomPrimaryKey(t *testing.T) {
 		Val string `db:"val"`
 	}
 
-	dao := dba.NewDao[Config](q, "configs").PrimaryKey("key")
+	dao := dba.NewDao[Config](q, "configs").PK("key")
 
 	// CustomPK 非 int64，用 RawCreate 代替
 	dao.RawCreate(Config{Key: "theme", Val: "dark"}).Exec()
@@ -459,8 +459,8 @@ func TestDao_Q_CustomQuery(t *testing.T) {
 	dao.Create(Item{Name: "a", Val: 10})
 	dao.Create(Item{Name: "b", Val: 20})
 
-	// 使用 Q() 构建自定义查询
-	sum, _, err := dba.Scalar[int64](dao.Q().Add("SELECT SUM(val) FROM items"))
+	// 使用 SQL() 构建自定义查询
+	sum, _, err := dba.Scalar[int64](dao.SQL().Add("SELECT SUM(val) FROM items"))
 	if err != nil {
 		t.Fatal(err)
 	}

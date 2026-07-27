@@ -41,8 +41,8 @@ type Hook func(next ExecFunc) ExecFunc
 // ExecFunc is the execution function passed through the middleware chain.
 type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
 
-// PlaceholderFormat generates a placeholder for the n-th parameter.
-type PlaceholderFormat func(idx int) string
+// Formater generates a placeholder for the n-th parameter.
+type Formater func(idx int) string
 
 // QmarkFormat returns "?" for every index.
 func QmarkFormat(_ int) string { return "?" }
@@ -69,19 +69,19 @@ type SQL struct {
 	mainNodes []Node
 	varNodes  map[string]Node
 
-	db         sqlx.ExtContext
-	rawDB      *sqlx.DB
+	executor   sqlx.ExtContext
+	pool       *sqlx.DB
 	ctx        context.Context
 	err        error
 	quoter     Quoter
-	format     PlaceholderFormat
+	formater   Formater
 	driverName string
 	hooks      []Hook
 	copyId     int
 }
 
 // NewFromSqlx creates a SQL builder from a sqlx.DB. Auto-detects driver for
-// placeholder format and identifier quoting.
+// placeholder formater and identifier quoting.
 func NewFromSqlx(db *sqlx.DB) *SQL {
 	driver := db.DriverName()
 	quoter := AnsiQuoter
@@ -98,11 +98,11 @@ func NewFromSqlx(db *sqlx.DB) *SQL {
 	return &SQL{
 		mainNodes:  make([]Node, 0),
 		varNodes:   make(map[string]Node),
-		db:         db,
-		rawDB:      db,
+		executor:   db,
+		pool:       db,
 		ctx:        context.Background(),
 		quoter:     quoter,
-		format:     format,
+		formater:   format,
 		driverName: driver,
 		copyId:     0,
 	}
@@ -118,11 +118,11 @@ func Open(driver, dsn string) (*SQL, error) {
 	return NewFromSqlx(db), nil
 }
 
-func (d *SQL) DB() *sqlx.DB { return d.rawDB }
+func (d *SQL) Pool() *sqlx.DB { return d.pool }
 
 func (d *SQL) Close() error {
-	if d.rawDB != nil {
-		return d.rawDB.Close()
+	if d.pool != nil {
+		return d.pool.Close()
 	}
 	return nil
 }
@@ -131,12 +131,12 @@ func (d *SQL) copy() *SQL {
 	clone := &SQL{
 		mainNodes:  make([]Node, len(d.mainNodes)),
 		varNodes:   make(map[string]Node),
-		db:         d.db,
-		rawDB:      d.rawDB,
+		executor:   d.executor,
+		pool:       d.pool,
 		ctx:        d.ctx,
 		err:        d.err,
 		quoter:     d.quoter,
-		format:     d.format,
+		formater:   d.formater,
 		driverName: d.driverName,
 		copyId:     d.copyId + 1,
 	}
@@ -151,8 +151,8 @@ func (d *SQL) copy() *SQL {
 	return clone
 }
 
-// WithContext returns a new builder with the given context.
-func (d *SQL) WithContext(ctx context.Context) *SQL {
+// WithCtx returns a new builder with the given context.
+func (d *SQL) WithCtx(ctx context.Context) *SQL {
 	clone := d.copy()
 	clone.ctx = ctx
 	return clone
@@ -165,24 +165,24 @@ func (d *SQL) Quoter(quoter Quoter) *SQL {
 	return clone
 }
 
-// Format returns a new builder with the given placeholder format.
-func (d *SQL) Format(formatter PlaceholderFormat) *SQL {
+// Formater returns a new builder with the given placeholder formater.
+func (d *SQL) Formater(formatter Formater) *SQL {
 	clone := d.copy()
-	clone.format = formatter
+	clone.formater = formatter
 	return clone
 }
 
 // Unsafe returns a new builder that ignores unmapped columns.
 func (d *SQL) Unsafe() *SQL {
 	clone := d.copy()
-	switch v := d.db.(type) {
+	switch v := d.executor.(type) {
 	case *sqlx.DB:
-		clone.db = v.Unsafe()
-		if d.rawDB != nil {
-			clone.rawDB = d.rawDB.Unsafe()
+		clone.executor = v.Unsafe()
+		if d.pool != nil {
+			clone.pool = d.pool.Unsafe()
 		}
 	case *sqlx.Tx:
-		clone.db = v.Unsafe()
+		clone.executor = v.Unsafe()
 	}
 	return clone
 }
@@ -322,12 +322,12 @@ func (d *SQL) build() (string, []any, error) {
 							sqlBuilder.WriteString(", ")
 						}
 						argCount++
-						sqlBuilder.WriteString(d.format(argCount))
+						sqlBuilder.WriteString(d.formater(argCount))
 						finalArgs = append(finalArgs, rv.Index(j).Interface())
 					}
 				} else {
 					argCount++
-					sqlBuilder.WriteString(d.format(argCount))
+					sqlBuilder.WriteString(d.formater(argCount))
 					finalArgs = append(finalArgs, argVal)
 				}
 
@@ -555,7 +555,7 @@ func (d *SQL) List(dest interface{}) error {
 		return rows.Err()
 	}
 	_, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
-		return nil, sqlx.SelectContext(ctx, d.db, dest, query, args...)
+		return nil, sqlx.SelectContext(ctx, d.executor, dest, query, args...)
 	})
 	return err
 }
@@ -585,7 +585,7 @@ func (d *SQL) Get(dest any) (found bool, err error) {
 	}
 
 	_, err = d.execute(func(ctx context.Context, query string, args []any) (any, error) {
-		return nil, sqlx.GetContext(ctx, d.db, dest, query, args...)
+		return nil, sqlx.GetContext(ctx, d.executor, dest, query, args...)
 	})
 
 	if err != nil {
@@ -600,7 +600,7 @@ func (d *SQL) Get(dest any) (found bool, err error) {
 // Exec builds and executes a non-query statement.
 func (d *SQL) Exec() (sql.Result, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
-		return d.db.ExecContext(ctx, query, args...)
+		return d.executor.ExecContext(ctx, query, args...)
 	})
 	if err != nil {
 		return nil, err
@@ -611,7 +611,7 @@ func (d *SQL) Exec() (sql.Result, error) {
 // Rows returns a raw *sqlx.Rows cursor for streaming.
 func (d *SQL) Rows() (*sqlx.Rows, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
-		return d.db.QueryxContext(ctx, query, args...)
+		return d.executor.QueryxContext(ctx, query, args...)
 	})
 	if err != nil {
 		return nil, err
@@ -704,22 +704,22 @@ func (d *SQL) Delete(table string, where string, args ...any) *SQL {
 
 // Begin starts a transaction and returns a new builder backed by the Tx.
 func (d *SQL) Begin() (*SQL, error) {
-	if d.rawDB == nil {
+	if d.pool == nil {
 		return nil, errors.New("dba: transaction already started")
 	}
-	tx, err := d.rawDB.BeginTxx(d.ctx, nil)
+	tx, err := d.pool.BeginTxx(d.ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	clone := d.copy()
-	clone.db = tx
-	clone.rawDB = nil
+	clone.executor = tx
+	clone.pool = nil
 	return clone, nil
 }
 
 // Commit commits the active transaction.
 func (d *SQL) Commit() error {
-	tx, ok := d.db.(*sqlx.Tx)
+	tx, ok := d.executor.(*sqlx.Tx)
 	if !ok {
 		return errors.New("dba: no active transaction")
 	}
@@ -728,7 +728,7 @@ func (d *SQL) Commit() error {
 
 // Rollback rolls back the active transaction.
 func (d *SQL) Rollback() error {
-	tx, ok := d.db.(*sqlx.Tx)
+	tx, ok := d.executor.(*sqlx.Tx)
 	if !ok {
 		return errors.New("dba: no active transaction")
 	}
@@ -739,17 +739,27 @@ func (d *SQL) Rollback() error {
 // panics, the transaction is rolled back. If already in a transaction, fn
 // is executed directly without nesting.
 func (d *SQL) Transaction(fn func(*SQL) error) error {
-	if d.rawDB == nil {
+	// already in tx
+	if d.pool == nil {
 		return fn(d)
 	}
-	txDuck, err := d.Begin()
+
+	tx, err := d.Begin()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = txDuck.Rollback() }()
 
-	if err := fn(txDuck); err != nil {
+	defer func() {
+		if r := recover(); r != nil {
+			_ = tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
 		return err
 	}
-	return txDuck.Commit()
+
+	return tx.Commit()
 }
