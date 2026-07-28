@@ -10,6 +10,15 @@ import (
 	"github.com/jmoiron/sqlx/reflectx"
 )
 
+// Map transforms each element of a slice using fn and returns a new slice.
+func Map[T any, R any](slice []T, fn func(T) R) []R {
+	result := make([]R, len(slice))
+	for i, v := range slice {
+		result[i] = fn(v)
+	}
+	return result
+}
+
 // IndexBy converts a slice into a map keyed by fn(element).
 // Returns an error if duplicate keys are found.
 func IndexBy[T any, K comparable](slice []T, fn func(T) K) (map[K]T, error) {
