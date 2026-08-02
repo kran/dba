@@ -313,7 +313,9 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 		return clone
 	}
 
-	cols, _, err := ColumnsAndValues(entities[0], true)
+	// 批量要求所有行同列集: omitempty 按行跳列会导致列集漂移 (零值行缺列),
+	// 统一用全列 (omitempty=false), 零值也插入。
+	cols, _, err := ColumnsAndValues(entities[0], false)
 	if err != nil || len(cols) == 0 {
 		clone := d.copy()
 		clone.err = fmt.Errorf("dba: batch insert: %w", err)
@@ -322,7 +324,7 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 
 	rows := make([][]any, len(entities))
 	for i, entity := range entities {
-		keys, vals, err := ColumnsAndValues(entity, true)
+		keys, vals, err := ColumnsAndValues(entity, false)
 		if err != nil {
 			clone := d.copy()
 			clone.err = fmt.Errorf("dba: batch insert: entity %d: %w", i, err)

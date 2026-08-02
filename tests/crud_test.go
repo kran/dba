@@ -748,3 +748,34 @@ func TestInsert_JSONRawMessage_SingleParam(t *testing.T) {
 	}
 	_ = sql
 }
+
+// 批量插入: 零值字段不导致列集漂移 (omitempty 按行跳列的回归)
+func TestBatchInsert_ZeroValueRows(t *testing.T) {
+	type batchUser struct {
+		ID   int    `db:"id,omitempty"`
+		Name string `db:"name"`
+		Age  int    `db:"age,omitempty"`
+	}
+	q, _ := newQ(t)
+	users := []batchUser{
+		{Name: "alice", Age: 20},
+		{Name: "bob"}, // Age=0: 零值行
+		{Name: "carol", Age: 30},
+	}
+	rows := make([]any, len(users))
+	for i := range users {
+		rows[i] = users[i]
+	}
+	sql, args, err := q.BatchInsert("users", rows).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 全列一致: id, name, age (零值也插)
+	want := "INSERT  INTO \"users\" (\"id\", \"name\", \"age\") VALUES\n($1, $2, $3), ($4, $5, $6), ($7, $8, $9)"
+	if sql != want {
+		t.Errorf("sql:\n got  %q\n want %q", sql, want)
+	}
+	if len(args) != 9 {
+		t.Errorf("args: %v", args)
+	}
+}

@@ -150,6 +150,9 @@ func ColumnsAndValues(model any, omitempty bool) ([]string, []any, error) {
 
 	// ── Struct branch ───────────────────────────────────────
 	if rv.Kind() != reflect.Struct {
+		if !rv.IsValid() {
+			return nil, nil, fmt.Errorf("dba: ToKV expects struct or map[string]any, got nil")
+		}
 		return nil, nil, fmt.Errorf("dba: ToKV expects struct or map[string]any, got %s", rv.Kind())
 	}
 

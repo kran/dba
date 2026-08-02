@@ -3,6 +3,7 @@ package dba_test
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -235,5 +236,71 @@ func TestColumnsAndValuesEdgeCases(t *testing.T) {
 				t.Fatalf("column %q should not appear, keys=%v", banned, keys)
 			}
 		}
+	}
+}
+
+// ── 审计补充: 行为正确但未锁住的边界 ──
+
+// 匿名指针嵌入: *struct 匿名字段递归展开
+func TestColumnsAndValuesAnonPtrEmbed(t *testing.T) {
+	type anonBase struct {
+		B int `db:"b"`
+	}
+	type anonModel struct {
+		*anonBase
+		X int `db:"x"`
+	}
+	keys, vals, err := dba.ColumnsAndValues(&anonModel{anonBase: &anonBase{B: 1}, X: 2}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys[0] != "b" || keys[1] != "x" {
+		t.Fatalf("keys: %v", keys)
+	}
+	if vals[0] != 1 || vals[1] != 2 {
+		t.Fatalf("vals: %v", vals)
+	}
+}
+
+// nil []byte + omitempty: 省略
+func TestColumnsAndValuesNilBytesOmitempty(t *testing.T) {
+	type bytesModel struct {
+		Raw []byte `db:"raw,omitempty"`
+		OK  bool   `db:"ok"`
+	}
+	keys, vals, err := dba.ColumnsAndValues(bytesModel{OK: true}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0] != "ok" {
+		t.Fatalf("nil []byte should be omitted: %v", keys)
+	}
+	if vals[0] != true {
+		t.Fatalf("vals: %v", vals)
+	}
+}
+
+// 非法输入: int 报错, nil 报错 (信息含 nil)
+func TestColumnsAndValuesInvalidInput(t *testing.T) {
+	if _, _, err := dba.ColumnsAndValues(42, true); err == nil {
+		t.Fatal("expected error for int input")
+	}
+	_, _, err := dba.ColumnsAndValues(nil, true)
+	if err == nil || !strings.Contains(err.Error(), "got nil") {
+		t.Fatalf("expected 'got nil' error, got %v", err)
+	}
+}
+
+// map 输入: 键排序
+func TestColumnsAndValuesMapSorted(t *testing.T) {
+	keys, vals, err := dba.ColumnsAndValues(map[string]any{"z": 1, "m": 2, "a": 3}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 3 || keys[0] != "a" || keys[1] != "m" || keys[2] != "z" {
+		t.Fatalf("keys should be sorted: %v", keys)
+	}
+	if vals[0] != 3 || vals[1] != 2 || vals[2] != 1 {
+		t.Fatalf("vals: %v", vals)
 	}
 }
