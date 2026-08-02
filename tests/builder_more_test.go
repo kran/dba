@@ -56,7 +56,11 @@ func TestConcurrentBuilders(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			name := "p" + strconv.Itoa(i)
-			q := base.RegisterPipe(name, func(ctx dba.RenderCtx, v any) error {
+			q := base.RegisterPipe(name, func(ctx dba.RenderCtx, content string) error {
+				v, err := ctx.Resolve(content)
+				if err != nil {
+					return err
+				}
 				ctx.AddParam(v)
 				return nil
 			})
@@ -127,7 +131,7 @@ func TestPlaceholderConservation(t *testing.T) {
 func TestNestedVarWithPipesAndMacros(t *testing.T) {
 	q, _ := newQ(t)
 	// Var 注册时携带参数, 内容含 #{1|raw} 管道 + @{2} 宏别名
-	q = q.Var("cond", "status = #{1|raw} AND name = @{2}", "active", "users")
+	q = q.Var("cond", "status = #{1|raw} AND name = #{2|quote}", "active", "users")
 
 	// 变量递归渲染 + 外层 Add 参数共存
 	sql, args, err := q.Add("SELECT * FROM users WHERE ${cond} AND id = #{1}", 5).ToSQL()
@@ -148,8 +152,8 @@ func TestNestedVarWithPipesAndMacros(t *testing.T) {
 
 func TestPipeMidwayError(t *testing.T) {
 	q, _ := newQ(t)
-	q = q.RegisterPipe("boom", func(ctx dba.RenderCtx, v any) error {
-		ctx.AddParam(v)                        // 先写占位符
+	q = q.RegisterPipe("boom", func(ctx dba.RenderCtx, content string) error {
+		ctx.AddParam(content)                  // 先写占位符 (字面量)
 		return fmt.Errorf("boom: pipe failed") // 再报错
 	})
 	_, _, err := q.Add("SELECT #{1|boom} FROM t", 1).ToSQL()

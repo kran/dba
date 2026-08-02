@@ -6,12 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"reflect"
 	"strconv"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/jmoiron/sqlx/reflectx"
 )
 
 // F is the default field variable name used by Select and Page.
@@ -22,8 +20,6 @@ const (
 
 // H is a shorthand for map[string]any.
 type H = map[string]any
-
-var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
 
 // SQLExpr wraps a raw SQL expression for Insert/Update values.
 type SQLExpr struct {
@@ -602,6 +598,9 @@ func (d *SQL) build() (string, []any, error) {
 	bw := &buildRenderCtx{sqlBuilder: &sqlBuilder, argCount: &argCount, formater: d.formater, finalArgs: &finalArgs, quoter: d.quoter}
 	var render func(items []item, args []any) error
 	render = func(items []item, args []any) error {
+		prev := bw.args
+		bw.args = args                    // 当前参数列表 (var 递归时 = varNode.Args)
+		defer func() { bw.args = prev }() // 递归返回后恢复, 外层宏继续用外层参数
 		for _, it := range items {
 			switch it.kind {
 			case itemText:
@@ -635,69 +634,10 @@ func (d *SQL) build() (string, []any, error) {
 	return sqlBuilder.String(), finalArgs, nil
 }
 
-func resolveArg(args []any, content string) (any, error) {
-	if idx, err := strconv.Atoi(content); err == nil {
-		if idx < 1 || idx > len(args) {
-			return nil, fmt.Errorf("dba: index %d out of bounds", idx)
-		}
-		return args[idx-1], nil
-	}
-	if len(args) == 0 {
-		return nil, fmt.Errorf("dba: no args")
-	}
-	return extractNamedArg(args[len(args)-1], content)
-}
-
-func extractNamedArg(src any, name string) (any, error) {
-	rv := reflect.ValueOf(src)
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			return nil, fmt.Errorf("dba: named args source is nil pointer")
-		}
-		rv = rv.Elem()
-	}
-
-	if rv.Kind() == reflect.Map {
-		if rv.Type().Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("dba: map key must be string")
-		}
-		val := rv.MapIndex(reflect.ValueOf(name))
-		if !val.IsValid() {
-			return nil, fmt.Errorf("dba: named arg '%s' not found in map", name)
-		}
-		return val.Interface(), nil
-	}
-
-	if rv.Kind() == reflect.Struct {
-		fm := mapper.TypeMap(rv.Type())
-		fi := fm.GetByPath(name)
-		if fi == nil {
-			return nil, fmt.Errorf("dba: field '%s' not found in struct", name)
-		}
-		return reflectx.FieldByIndexesReadOnly(rv, fi.Index).Interface(), nil
-	}
-
-	return nil, fmt.Errorf("dba: named args source must be struct or map")
-}
-
 // renderMacro 渲染宏 token: '#' = 管道容器, '$' = 变量 (结构层), 其他 = 宏别名。
 func (d *SQL) renderMacro(bw RenderCtx, render func([]item, []any) error, it item, args []any) error {
-	switch it.prefix {
-	case '#':
-		// 管道容器: 内容 "key|pipe" (无 | = bind 默认)
-		key, pipe := splitKeyPipe(it.val)
-		argVal, err := resolveArg(args, key)
-		if err != nil {
-			return err
-		}
-		fn, ok := d.pipes[pipe]
-		if !ok {
-			return fmt.Errorf("dba: unknown pipe %q", pipe)
-		}
-		return fn(bw, argVal)
-
-	case '$':
-		// 变量引用: 注册内容递归渲染, 否则默认文本, 否则报错
+	// $ 变量: 结构层 (模板递归), 不经管道
+	if it.prefix == '$' {
 		parts := strings.SplitN(it.val, ":", 2)
 		key := strings.TrimSpace(parts[0])
 		if varNode, ok := d.varNodes[key]; ok {
@@ -715,29 +655,29 @@ func (d *SQL) renderMacro(bw RenderCtx, render func([]item, []any) error, it ite
 			return render(sub, nil)
 		}
 		return fmt.Errorf("dba: undefined variable ${%s}", key)
-
-	default:
-		// 宏别名: 前缀 → 管道名, 值 = resolveArg(内容)
-		pipe, ok := d.macros[it.prefix]
-		if !ok {
-			return fmt.Errorf("dba: unknown macro %c", it.prefix)
-		}
-		argVal, err := resolveArg(args, it.val)
-		if err != nil {
-			return err
-		}
-		fn, ok := d.pipes[pipe]
-		if !ok {
-			return fmt.Errorf("dba: macro %c refers to unknown pipe %q", it.prefix, pipe)
-		}
-		return fn(bw, argVal)
 	}
+
+	// 统一管道渲染: 所有宏 (#/@/!/用户宏) 同一逻辑。
+	// 内容 "key|pipe" 可覆盖管道; 否则用宏默认管道; 再否则 bind。
+	key, pipe, hasPipe := splitKeyPipe(it.val)
+	if !hasPipe {
+		pipe = d.macros[it.prefix]
+		if pipe == "" {
+			pipe = "bind"
+		}
+	}
+	fn, ok := d.pipes[pipe]
+	if !ok {
+		return fmt.Errorf("dba: unknown pipe %q", pipe)
+	}
+	return fn(bw, key)
 }
 
-// splitKeyPipe 分割 "#{key|pipe}" 内容; 两端空白容忍 (与 $ 变量一致), 无 | 时 pipe = "bind"。
-func splitKeyPipe(content string) (key, pipe string) {
+// splitKeyPipe 分割 "key|pipe" 内容; 两端空白容忍 (与 $ 变量一致)。
+// hasPipe=false 表示内容未声明管道 (用宏默认或 bind)。
+func splitKeyPipe(content string) (key, pipe string, hasPipe bool) {
 	if idx := strings.IndexByte(content, '|'); idx >= 0 {
-		return strings.TrimSpace(content[:idx]), strings.TrimSpace(content[idx+1:])
+		return strings.TrimSpace(content[:idx]), strings.TrimSpace(content[idx+1:]), true
 	}
-	return strings.TrimSpace(content), "bind"
+	return strings.TrimSpace(content), "bind", false
 }

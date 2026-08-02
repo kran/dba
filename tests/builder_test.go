@@ -81,7 +81,7 @@ func TestAdd_NamedMacro_Struct(t *testing.T) {
 
 func TestAdd_IdentifierMacro(t *testing.T) {
 	q, _ := newQ(t) // sqlite → AnsiQuoter
-	sql, _, err := q.Add("SELECT @{1} FROM @{2}", "name", "users").ToSQL()
+	sql, _, err := q.Add("SELECT #{1|quote} FROM #{2|quote}", "name", "users").ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}

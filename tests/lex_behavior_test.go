@@ -24,7 +24,7 @@ func toSQL(t *testing.T, q *dba.SQL, want string) []any {
 // 基本宏扫描
 func TestLexerBasic(t *testing.T) {
 	q, _ := newQ(t)
-	args := toSQL(t, q.Add("SELECT @{1} FROM !{2} WHERE id = #{3}", "name", "users", 1),
+	args := toSQL(t, q.Add("SELECT #{1|quote} FROM !{2} WHERE id = #{3}", "name", "users", 1),
 		`SELECT "name" FROM users WHERE id = $1`)
 	if len(args) != 1 || args[0] != 1 {
 		t.Errorf("args: %v", args)

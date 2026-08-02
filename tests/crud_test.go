@@ -524,7 +524,7 @@ func TestUpdate_Expr_IdentifierMacro(t *testing.T) {
 	q, _ := newQ(t)
 	// SQLExpr 内也能用 @{} 标识符转义
 	sql, args, err := q.Update("stats", map[string]any{
-		"total": dba.Expr("@{1}+#{2}", "count", 1),
+		"total": dba.Expr("#{1|quote}+#{2}", "count", 1),
 	}, "id = #{1}", 5).ToSQL()
 	if err != nil {
 		t.Fatal(err)

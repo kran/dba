@@ -11,7 +11,11 @@ import (
 
 func TestRegisterPipe(t *testing.T) {
 	q, _ := newQ(t)
-	q = q.RegisterPipe("upper", func(ctx dba.RenderCtx, v any) error {
+	q = q.RegisterPipe("upper", func(ctx dba.RenderCtx, content string) error {
+		v, err := ctx.Resolve(content)
+		if err != nil {
+			return err
+		}
 		ctx.AddParam(strings.ToUpper(v.(string)))
 		return nil
 	})
@@ -24,7 +28,11 @@ func TestRegisterPipe(t *testing.T) {
 // 注册管道不影响原 builder (copy-on-write 隔离)
 func TestRegisterPipe_Isolation(t *testing.T) {
 	q, _ := newQ(t)
-	q2 := q.RegisterPipe("upper", func(ctx dba.RenderCtx, v any) error {
+	q2 := q.RegisterPipe("upper", func(ctx dba.RenderCtx, content string) error {
+		v, err := ctx.Resolve(content)
+		if err != nil {
+			return err
+		}
 		ctx.AddParam(strings.ToUpper(v.(string)))
 		return nil
 	})
@@ -47,7 +55,11 @@ func TestUnknownPipe(t *testing.T) {
 
 func TestRegisterMacro(t *testing.T) {
 	q, _ := newQ(t)
-	q = q.RegisterPipe("upper", func(ctx dba.RenderCtx, v any) error {
+	q = q.RegisterPipe("upper", func(ctx dba.RenderCtx, content string) error {
+		v, err := ctx.Resolve(content)
+		if err != nil {
+			return err
+		}
 		ctx.AddParam(strings.ToUpper(v.(string)))
 		return nil
 	}).RegisterMacro('^', "upper")
@@ -80,18 +92,23 @@ func TestRegisterMacro_UnknownPipe(t *testing.T) {
 // 自定义宏的双写转义
 func TestRegisterMacro_Escape(t *testing.T) {
 	q, _ := newQ(t)
-	q = q.RegisterPipe("upper", func(ctx dba.RenderCtx, v any) error {
+	q = q.RegisterPipe("upper", func(ctx dba.RenderCtx, content string) error {
+		v, err := ctx.Resolve(content)
+		if err != nil {
+			return err
+		}
 		ctx.AddParam(strings.ToUpper(v.(string)))
 		return nil
 	}).RegisterMacro('^', "upper")
 	toSQL(t, q.Add("SELECT ^^{1}"), "SELECT ^{1}")
 }
 
-// 宏与内置管道等价: @ ≡ #{1|ident}
+// 宏与内置管道等价: @ ≡ #{1|quote}
 func TestMacroAliasEquivalence(t *testing.T) {
 	q, _ := newQ(t)
-	toSQL(t, q.Add("SELECT @{1}", "name"), `SELECT "name"`)
-	toSQL(t, q.Add("SELECT #{1|ident}", "name"), `SELECT "name"`)
+	// @ = 字面量 lident: @{name} ≡ #{name|literalquote}
+	toSQL(t, q.Add("SELECT @{name}"), `SELECT "name"`)
+	toSQL(t, q.Add("SELECT #{name|literalquote}"), `SELECT "name"`)
 }
 
 // ── copy-on-write 隔离 (Var/Use 写不影响原实例) ──

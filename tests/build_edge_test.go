@@ -10,7 +10,7 @@ import (
 
 func TestBuild_MixedMacros(t *testing.T) {
 	q, _ := newQ(t)
-	sql, args, err := q.Add("SELECT @{1} FROM !{2} WHERE id = #{3}", "name", "users", 42).ToSQL()
+	sql, args, err := q.Add("SELECT #{1|quote} FROM !{2} WHERE id = #{3}", "name", "users", 42).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestBuild_MixedMacros(t *testing.T) {
 func TestBuild_AllMacroTypes(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.
-		Add("SELECT ${F:*} FROM @{1} WHERE NAME = #{2} ORDER BY !{3}", "users", "alice", "id DESC").
+		Add("SELECT ${F:*} FROM #{1|quote} WHERE NAME = #{2} ORDER BY !{3}", "users", "alice", "id DESC").
 		ToSQL()
 	if err != nil {
 		t.Fatal(err)
@@ -237,28 +237,21 @@ func TestBuild_VarDefaultSimpleText(t *testing.T) {
 
 // ==================== @{} 标识符转义 ====================
 
-func TestBuild_IdentifierNoArgError(t *testing.T) {
-	q, _ := newQ(t)
-	_, _, err := q.Add("SELECT @{USER} FROM t").ToSQL()
-	if err == nil {
-		t.Error("expected error for @{} with no args")
-	}
-}
-
 func TestBuild_IdentifierFromNamedArg(t *testing.T) {
 	q, _ := newQ(t)
-	sql, _, err := q.Add("SELECT @{col} FROM t", map[string]any{"col": "email"}).ToSQL()
+	// @ 新语义: 内容即字面量标识符 (不再取参数)
+	sql, _, err := q.Add("SELECT @{col} FROM t").ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sql != `SELECT "email" FROM t` {
+	if sql != `SELECT "col" FROM t` {
 		t.Errorf("got %q", sql)
 	}
 }
 
 func TestBuild_MultipleIdentifiers(t *testing.T) {
 	q, _ := newQ(t)
-	sql, _, err := q.Add("SELECT @{1}, @{2} FROM @{3}", "id", "name", "users").ToSQL()
+	sql, _, err := q.Add("SELECT #{1|quote}, #{2|quote} FROM #{3|quote}", "id", "name", "users").ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +404,7 @@ func TestBuild_NamedArgMissingKey(t *testing.T) {
 
 func TestBuild_IdentifierNilError(t *testing.T) {
 	q, _ := newQ(t)
-	_, _, err := q.Add("SELECT @{1}", nil).ToSQL()
+	_, _, err := q.Add("SELECT #{1|quote}", nil).ToSQL()
 	if err == nil {
 		t.Error("expected error for nil identifier arg")
 	}
@@ -531,7 +524,7 @@ func TestBuild_ExprNoArgs(t *testing.T) {
 func TestBuild_ComplexQuery(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.
-		Add("SELECT ${F:u.id, u.name} FROM @{1} u", "users").
+		Add("SELECT ${F:u.id, u.name} FROM #{1|quote} u", "users").
 		Add("JOIN orders o ON o.user_id = u.id").
 		AddIf(true, "WHERE u.status = #{1}", "active").
 		AddIf(false, "AND u.deleted = #{1}", true).
@@ -667,7 +660,11 @@ func TestBuild_RawArg(t *testing.T) {
 // 用户自定义管道: RegisterPipe 扩展渲染语义
 func TestBuild_CustomPipe(t *testing.T) {
 	q, _ := newQ(t)
-	q = q.RegisterPipe("wrap_upper", func(ctx dba.RenderCtx, v any) error {
+	q = q.RegisterPipe("wrap_upper", func(ctx dba.RenderCtx, content string) error {
+		v, err := ctx.Resolve(content)
+		if err != nil {
+			return err
+		}
 		ctx.WriteString("UPPER(")
 		ctx.AddParam(v)
 		ctx.WriteString(")")
