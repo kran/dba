@@ -116,8 +116,8 @@ func TestBuild_NamedArgFromStructPointer(t *testing.T) {
 func TestBuild_SliceMultipleInClauses(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.
-		Add("WHERE id IN (#{1})", []int{1, 2}).
-		Add("AND name IN (#{1})", []string{"a", "b", "c"}).
+		Add("WHERE id IN (#{1:expand})", []int{1, 2}).
+		Add("AND name IN (#{1:expand})", []string{"a", "b", "c"}).
 		ToSQL()
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestBuild_NilArg(t *testing.T) {
 func TestBuild_PointerToSlice(t *testing.T) {
 	q, _ := newQ(t)
 	ids := []int{10, 20}
-	sql, args, err := q.Add("WHERE id IN (#{1})", &ids).ToSQL()
+	sql, args, err := q.Add("WHERE id IN (#{1:expand})", &ids).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,11 +425,18 @@ func TestBuild_RawNilError(t *testing.T) {
 	}
 }
 
-func TestBuild_EmptySliceArg(t *testing.T) {
+func TestBuild_EmptySlice_ExpandsToEmpty(t *testing.T) {
+	// expand 空 slice: 展开 0 个参数, 生成 IN () —— 框架不拦截, 由数据库报语法错误
 	q, _ := newQ(t)
-	_, _, err := q.Add("WHERE id IN (#{1})", []int{}).ToSQL()
-	if err == nil {
-		t.Error("expected error for empty slice")
+	sql, args, err := q.Add("WHERE id IN (#{1:expand})", []int{}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "WHERE id IN ()" {
+		t.Errorf("got  %q\nwant %q", sql, "WHERE id IN ()")
+	}
+	if len(args) != 0 {
+		t.Errorf("args: %v", args)
 	}
 }
 
@@ -611,8 +618,8 @@ func TestBuild_ImmutableVarDoesNotAffectBase(t *testing.T) {
 	}
 }
 
-// []byte 在 IN 括号内也是单个二进制参数, 不逐字节展开
-func TestBuild_INByteSlice_SingleParam(t *testing.T) {
+// 无 expand: []byte 作为单个二进制参数 (数据库 byte 类型), 不逐字节展开
+func TestBuild_ByteSlice_NoExpand_SingleParam(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.Add("WHERE id IN (#{1})", []byte("abc")).ToSQL()
 	if err != nil {
@@ -624,6 +631,39 @@ func TestBuild_INByteSlice_SingleParam(t *testing.T) {
 	}
 	if len(args) != 1 || string(args[0].([]byte)) != "abc" {
 		t.Errorf("args: %v", args)
+	}
+}
+
+// 显式 expand: []byte 与其他 slice 一致, 逐字节展开 (调用者意图自担)
+func TestBuild_ByteSlice_Expand_ByteParams(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Add("WHERE id IN (#{1:expand})", []byte("ab")).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sql != "WHERE id IN ($1, $2)" {
+		t.Errorf("got  %q\nwant %q", sql, "WHERE id IN ($1, $2)")
+	}
+	if len(args) != 2 || args[0].(byte) != 'a' || args[1].(byte) != 'b' {
+		t.Errorf("args: %v", args)
+	}
+}
+
+// expand 非 slice/array: 框架报语法错误
+func TestBuild_Expand_NonSlice_Error(t *testing.T) {
+	q, _ := newQ(t)
+	_, _, err := q.Add("WHERE id IN (#{1:expand})", 42).ToSQL()
+	if err == nil || !strings.Contains(err.Error(), "expand modifier requires slice or array") {
+		t.Errorf("expected expand type error, got %v", err)
+	}
+}
+
+// 未知 modifier: 报错
+func TestBuild_UnknownModifier_Error(t *testing.T) {
+	q, _ := newQ(t)
+	_, _, err := q.Add("WHERE id = #{1:null}", 1).ToSQL()
+	if err == nil || !strings.Contains(err.Error(), "unknown parameter modifier") {
+		t.Errorf("expected unknown modifier error, got %v", err)
 	}
 }
 

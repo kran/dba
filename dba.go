@@ -298,21 +298,20 @@ func (d *SQL) build() (string, []any, error) {
 			end += start
 			content := str[start+1 : end]
 
-			// inINContext: # 参数是否紧跟左括号 (IN 场景)。展开仅属于 IN 语法
-			// (对齐 GORM clause.Expr 的 afterParenthesis), 值绑定位置永不展开 slice。
-			inINContext := false
-			if prefix == '#' {
-				for j := start - 2; j >= i; j-- {
-					if c := str[j]; c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-						inINContext = c == '('
-						break
-					}
-				}
-			}
-
 			switch prefix {
 			case '#':
-				argVal, err := resolveArg(n.Args, content)
+				// modifier 语法: #{key} 单值绑定 / #{key:expand} 展开 slice/array。
+				// 无 expand 时原样绑定 ([]byte 单值给数据库 byte 类型, []int 交由驱动层报错);
+				// expand 时拆解元素, []byte 同样逐字节展开 (显式意图, 框架不拦截)。
+				key, mod := content, ""
+				if idx := strings.IndexByte(content, ':'); idx >= 0 {
+					key, mod = content[:idx], content[idx+1:]
+				}
+				if mod != "" && mod != "expand" {
+					return fmt.Errorf("dba: unknown parameter modifier %q in #{%s}", mod, content)
+				}
+
+				argVal, err := resolveArg(n.Args, key)
 				if err != nil {
 					return err
 				}
@@ -325,12 +324,9 @@ func (d *SQL) build() (string, []any, error) {
 					rv = rv.Elem()
 				}
 
-				if argVal != nil && inINContext && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) &&
-					rv.Type().Elem().Kind() != reflect.Uint8 {
-					// 仅 IN 上下文展开 slice; []byte (含 json.RawMessage 等别名) 在任何位置
-					// 都是单个二进制参数, 绝不逐字节展开
-					if rv.Len() == 0 {
-						return fmt.Errorf("dba: empty slice passed to parameter #{%s}", content)
+				if mod == "expand" {
+					if argVal == nil || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) {
+						return fmt.Errorf("dba: expand modifier requires slice or array, got %T in #{%s}", argVal, content)
 					}
 					for j := 0; j < rv.Len(); j++ {
 						if j > 0 {
