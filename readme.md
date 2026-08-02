@@ -46,12 +46,12 @@ query, args, _ := sqlx.In("SELECT * FROM users WHERE id IN (?)", ids)
 // dba — same thing, cleaner
 q.Add("SELECT * FROM users WHERE status = #{1}", "active").
     AddIf(name != "", "AND name = #{1}", name).
-    Add("AND id IN (#{1:expand})", ids) // explicit slice expansion
+    Add("AND id IN (#{1})", dba.Expand(ids)) // explicit slice expansion
 ```
 
 | Pain point | Raw sqlx | dba |
 |------------|----------|-----|
-| `IN (?)` expansion | `sqlx.In()` in a separate call | `#{1:expand}` explicit expansion |
+| `IN (?)` expansion | `sqlx.In()` in a separate call | `dba.Expand()` explicit expansion |
 | Conditional clauses | String concat + manual arg spread | `AddIf(cond, ...)` |
 | Count + data pagination | Two manually maintained SQL strings | `Page[T](base, page, size)` |
 | Identifier quoting | Manual per dialect | `@{1}` auto-quotes for PG/MySQL/SQLite |
@@ -66,22 +66,24 @@ q.Add("SELECT * FROM users WHERE status = #{1}", "active").
 | Syntax | What it does | Example |
 |--------|-------------|---------|
 | `#{1}` | Positional parameter — **single value, never expands** | `"WHERE id = #{1}"` → `"WHERE id = $1"` |
-| `#{1:expand}` | Expand slice/array into separate params | `"WHERE id IN (#{1:expand})"` + `[]int{1,2}` → `$1, $2` |
 | `#{name}` | Named parameter from map/struct | `"WHERE id = #{id}"` + `map["id"]` |
+| `dba.Expand(v)` | Arg wrapper — expand slice/array into separate params | `"IN (#{1})"` + `dba.Expand([]int{1,2})` → `$1, $2` |
 | `${key:default}` | Fillable slot with fallback | `"${order:ORDER BY id}"` → overridable |
 | `@{1}` / `@{name}` | Dialect-aware quoting | `"SELECT @{1}"` → `"SELECT \"name\""` |
 | `!{1}` / `!{name}` | Raw text injection (use sparingly) | `"ORDER BY !{1}"` → `"ORDER BY id DESC"` |
 | `##{text}` | Escape — output `#{text}` literally | `"##{1}"` → literal `"#{1}"` |
 
-Parameters are **single values by default** — expansion is explicit:
+Parameters are **single values by default** — expansion and other rendering is explicit via
+the `dba.Arg` interface (a parameter-side wrapper, mirroring `sql.NamedArg`):
 
 - `#{1}` binds one value as-is: `[]byte` works as a single binary param (BLOB/BINARY columns),
   and passing a non-byte slice is left to the driver to reject (`unsupported type []int`).
-- `#{1:expand}` expands a slice/array into separate params — use it for `IN` lists:
-  `IN (#{1:expand})` + `[]int{1,2,3}` → `$1, $2, $3`. No more `sqlx.In`.
-- `#{1:expand}` with a non-slice value is a build-time error; an empty slice expands to
-  zero params (e.g. `IN ()`), which the database rejects. The framework does not intercept
-  either case — intent is explicit, errors surface at the layer that owns them.
+- `dba.Expand(v)` expands a slice/array into separate params — use it for `IN` lists:
+  `IN (#{1})` + `dba.Expand([]int{1,2,3})` → `$1, $2, $3`. No more `sqlx.In`.
+  An empty slice expands to zero params (`IN ()`, rejected by the database);
+  `dba.ExpandOrNull(v)` renders `(NULL)` instead.
+- `dba.Null()` renders `NULL`; `dba.Raw(s)` injects raw text at a parameter position.
+- Custom semantics: implement `dba.Arg` (`WriteTo(w dba.ArgWriter) error`) — no framework changes needed.
 
 ### Methods
 

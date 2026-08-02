@@ -256,85 +256,25 @@ func (d *SQL) build() (string, []any, error) {
 
 	sqlBuilder.Grow(512)
 
-	writeText := func(s string) {
-		sqlBuilder.WriteString(s)
-	}
+	// 渲染: token 列表 → SQL 文本 + 参数 (扫描已由 lex 完成)
+	bw := &buildArgWriter{sqlBuilder: &sqlBuilder, argCount: &argCount, formater: d.formater, finalArgs: &finalArgs}
+	var render func(items []item, args []any) error
+	render = func(items []item, args []any) error {
+		for _, it := range items {
+			switch it.typ {
+			case itemText:
+				sqlBuilder.WriteString(it.val)
 
-	var parse func(n Node) error
-	parse = func(n Node) error {
-		str := n.RawSQL
-		i := 0
-		for i < len(str) {
-			start := strings.IndexByte(str[i:], '{')
-			if start == -1 {
-				writeText(str[i:])
-				break
-			}
-			start += i
-
-			// doubled-prefix escape: ##{ → literal #{, etc.
-			if start >= 2 && str[start-1] == str[start-2] && (str[start-1] == '#' || str[start-1] == '$' || str[start-1] == '@' || str[start-1] == '!') {
-				writeText(str[i : start-2])
-				sqlBuilder.WriteByte(str[start-1])
-				sqlBuilder.WriteByte('{')
-				i = start + 1
-				continue
-			}
-
-			// check valid prefix
-			if start == 0 || (str[start-1] != '#' && str[start-1] != '$' && str[start-1] != '@' && str[start-1] != '!') {
-				writeText(str[i : start+1])
-				i = start + 1
-				continue
-			}
-
-			prefix := str[start-1]
-			writeText(str[i : start-1])
-
-			end := strings.IndexByte(str[start:], '}')
-			if end == -1 {
-				return fmt.Errorf("dba: unclosed brace in %q", str)
-			}
-			end += start
-			content := str[start+1 : end]
-
-			switch prefix {
-			case '#':
-				// modifier 语法: #{key} 单值绑定 / #{key:expand} 展开 slice/array。
-				// 无 expand 时原样绑定 ([]byte 单值给数据库 byte 类型, []int 交由驱动层报错);
-				// expand 时拆解元素, []byte 同样逐字节展开 (显式意图, 框架不拦截)。
-				key, mod := content, ""
-				if idx := strings.IndexByte(content, ':'); idx >= 0 {
-					key, mod = content[:idx], content[idx+1:]
-				}
-				if mod != "" && mod != "expand" {
-					return fmt.Errorf("dba: unknown parameter modifier %q in #{%s}", mod, content)
-				}
-
-				argVal, err := resolveArg(n.Args, key)
+			case itemParam:
+				// 参数绑定: 默认单值 ([]byte 单参数给数据库 byte 类型, 非 byte slice
+				// 交由驱动层报错); 传 dba.Arg (如 Expand/Null/Raw) 时委托 WriteTo 渲染。
+				argVal, err := resolveArg(args, it.val)
 				if err != nil {
 					return err
 				}
-
-				rv := reflect.ValueOf(argVal)
-				for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-					if rv.IsNil() {
-						break
-					}
-					rv = rv.Elem()
-				}
-
-				if mod == "expand" {
-					if argVal == nil || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) {
-						return fmt.Errorf("dba: expand modifier requires slice or array, got %T in #{%s}", argVal, content)
-					}
-					for j := 0; j < rv.Len(); j++ {
-						if j > 0 {
-							sqlBuilder.WriteString(", ")
-						}
-						argCount++
-						sqlBuilder.WriteString(d.formater(argCount))
-						finalArgs = append(finalArgs, rv.Index(j).Interface())
+				if a, ok := argVal.(Arg); ok {
+					if err := a.WriteTo(bw); err != nil {
+						return err
 					}
 				} else {
 					argCount++
@@ -342,43 +282,48 @@ func (d *SQL) build() (string, []any, error) {
 					finalArgs = append(finalArgs, argVal)
 				}
 
-			case '$':
-				parts := strings.SplitN(content, ":", 2)
+			case itemVar:
+				// 变量引用: 注册内容递归渲染, 否则默认文本, 否则报错
+				parts := strings.SplitN(it.val, ":", 2)
 				key := strings.TrimSpace(parts[0])
 				if varNode, ok := d.varNodes[key]; ok {
-					if err := parse(varNode); err != nil {
+					sub, err := lex(varNode.RawSQL)
+					if err != nil {
+						return err
+					}
+					if err := render(sub, varNode.Args); err != nil {
+						return err
+					}
+				} else if len(parts) == 2 {
+					sub, err := lex(strings.TrimSpace(parts[1]))
+					if err != nil {
+						return err
+					}
+					if err := render(sub, nil); err != nil {
 						return err
 					}
 				} else {
-					if len(parts) == 2 {
-						if err := parse(Node{RawSQL: strings.TrimSpace(parts[1])}); err != nil {
-							return err
-						}
-					} else {
-						return fmt.Errorf("dba: undefined variable ${%s}", key)
-					}
+					return fmt.Errorf("dba: undefined variable ${%s}", key)
 				}
 
-			case '@':
-				val, err := resolveArg(n.Args, content)
+			case itemIdent:
+				argVal, err := resolveArg(args, it.val)
 				if err != nil {
 					return err
-				} else if val == nil {
-					return fmt.Errorf("dba: @{%s} resolved to nil", content)
+				} else if argVal == nil {
+					return fmt.Errorf("dba: @{%s} resolved to nil", it.val)
 				}
-				sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", val)))
+				sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", argVal)))
 
-			case '!':
-				val, err := resolveArg(n.Args, content)
+			case itemRaw:
+				argVal, err := resolveArg(args, it.val)
 				if err != nil {
 					return err
-				} else if val == nil {
-					return fmt.Errorf("dba: !{%s} resolved to nil", content)
+				} else if argVal == nil {
+					return fmt.Errorf("dba: !{%s} resolved to nil", it.val)
 				}
-				sqlBuilder.WriteString(fmt.Sprintf("%v", val))
+				sqlBuilder.WriteString(fmt.Sprintf("%v", argVal))
 			}
-
-			i = end + 1
 		}
 		return nil
 	}
@@ -387,7 +332,11 @@ func (d *SQL) build() (string, []any, error) {
 		if i > 0 {
 			sqlBuilder.WriteString("\n")
 		}
-		if err := parse(node); err != nil {
+		items, err := lex(node.RawSQL)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := render(items, node.Args); err != nil {
 			return "", nil, err
 		}
 	}
