@@ -492,7 +492,7 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 		return clone
 	}
 
-	cols, _, err := ToKeyValue(entities[0], true)
+	cols, _, err := ColumnsAndValues(entities[0], true)
 	if err != nil || len(cols) == 0 {
 		clone := d.copy()
 		clone.err = fmt.Errorf("dba: batch insert: %w", err)
@@ -501,7 +501,7 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 
 	rows := make([][]any, len(entities))
 	for i, entity := range entities {
-		keys, vals, err := ToKeyValue(entity, true)
+		keys, vals, err := ColumnsAndValues(entity, true)
 		if err != nil {
 			clone := d.copy()
 			clone.err = fmt.Errorf("dba: batch insert: entity %d: %w", i, err)
@@ -636,7 +636,7 @@ func (d *SQL) Select(table string, where string, args ...any) *SQL {
 
 // Insert generates and appends an INSERT INTO statement.
 func (d *SQL) Insert(table string, data any) *SQL {
-	cols, vals, err := ToKeyValue(data, true)
+	cols, vals, err := ColumnsAndValues(data, true)
 	if err != nil {
 		clone := d.copy()
 		clone.err = fmt.Errorf("dba: insert: %w", err)
@@ -669,7 +669,7 @@ func (d *SQL) Insert(table string, data any) *SQL {
 
 // Update generates and appends an UPDATE ... SET statement.
 func (d *SQL) Update(table string, data any, where string, args ...any) *SQL {
-	cols, vals, err := ToKeyValue(data, true)
+	cols, vals, err := ColumnsAndValues(data, true)
 	if err != nil {
 		clone := d.copy()
 		clone.err = fmt.Errorf("dba: update: %w", err)

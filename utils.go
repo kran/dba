@@ -6,9 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
-
-	"github.com/jmoiron/sqlx/reflectx"
 )
 
 // Map transforms each element of a slice using fn and returns a new slice.
@@ -114,7 +113,15 @@ func IsOk(v any) bool {
 	}
 }
 
-func ToKeyValue(model any, omitempty bool) ([]string, []any, error) {
+// ColumnsAndValues 把 struct 或 map 转换为列名与参数值列表。
+//
+// struct 策略: 自建递归遍历 (fieldList) 生成字段清单, 遍历时即时判定:
+//   - 原子类型 (driver.Valuer 实现者 / time.Time 及其可转换别名) 作为单列收束;
+//   - struct (匿名嵌入或普通字段, 值或指针) 递归展开子字段;
+//   - 其余基本类型/[]byte 直接作为单列。
+//
+// time.Time 不实现 Valuer (database/sql 原生参数类型), 由 isAtomicColumn 显式特判。
+func ColumnsAndValues(model any, omitempty bool) ([]string, []any, error) {
 	rv := reflect.ValueOf(model)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
@@ -146,50 +153,92 @@ func ToKeyValue(model any, omitempty bool) ([]string, []any, error) {
 		return nil, nil, fmt.Errorf("dba: ToKV expects struct or map[string]any, got %s", rv.Kind())
 	}
 
-	structMap := mapper.TypeMap(rv.Type())
-	keys := make([]string, 0, len(structMap.Index))
-	vals := make([]any, 0, len(structMap.Index))
-
-	for _, fi := range structMap.Index {
-		if fi.Name == "-" || fi.Name == "" {
+	fields := fieldList(rv.Type())
+	keys := make([]string, 0, len(fields))
+	vals := make([]any, 0, len(fields))
+	for _, f := range fields {
+		val := fieldByPath(rv, f.path)
+		if omitempty && f.omitempty && isZeroValue(val) {
 			continue
 		}
-
-		// skip unexported fields
-		if !fi.Field.IsExported() {
-			continue
-		}
-
-		// 原子 struct 类型 (driver.Valuer 实现者如 sql.NullString, 以及 database/sql
-		// 原生参数类型 time.Time) 的子字段由 reflectx 展开, 必须跳过 — 父字段会作为
-		// 整体原子列由本循环的单级条目写入。time.Time 不实现 Valuer, 需显式特判,
-		// 否则值类型时间字段会在 INSERT/UPDATE 中静默丢失。
-		if len(fi.Index) > 1 {
-			parentField := rv.Type().FieldByIndex(fi.Index[:len(fi.Index)-1])
-			if isAtomicColumn(parentField.Type) {
-				continue
-			}
-		}
-
-		val := reflectx.FieldByIndexesReadOnly(rv, fi.Index)
-
-		// skip 非原子 struct — 子字段已由 reflectx 展开 (递归 case)
-		if val.Kind() == reflect.Struct && !isAtomicColumn(val.Type()) {
-			continue
-		}
-
-		// omitempty: skip zero-valued fields
-		if _, hasOmitempty := fi.Options["omitempty"]; hasOmitempty && omitempty {
-			if isZeroValue(val) {
-				continue
-			}
-		}
-
-		keys = append(keys, fi.Name)
+		keys = append(keys, f.key)
 		vals = append(vals, val.Interface())
 	}
-
 	return keys, vals, nil
+}
+
+// fieldByPath 沿索引路径取值, 自动穿越指针/接口中间层。
+// 与 reflectx.FieldByIndexesReadOnly 的区别: nil 指针中间层返回目标字段类型的零值,
+// 不 panic (展开 nil *struct 字段时必需)。
+func fieldByPath(rv reflect.Value, path []int) reflect.Value {
+	// 先沿类型推导目标字段类型 (穿越指针/接口)
+	t := rv.Type()
+	for _, i := range path {
+		for t.Kind() == reflect.Ptr || t.Kind() == reflect.Interface {
+			t = t.Elem()
+		}
+		t = t.Field(i).Type
+	}
+	// 再沿值取字段 (nil 指针/接口 → 返回目标零值)
+	cur := rv
+	for _, i := range path {
+		for cur.Kind() == reflect.Ptr || cur.Kind() == reflect.Interface {
+			if cur.IsNil() {
+				return reflect.Zero(t)
+			}
+			cur = cur.Elem()
+		}
+		cur = cur.Field(i)
+	}
+	return cur
+}
+
+// kvField 一个待写入列: 列名 + 取值索引路径 + omitempty 选项。
+type kvField struct {
+	key       string
+	path      []int
+	omitempty bool
+}
+
+var fieldListCache sync.Map // reflect.Type → []kvField
+
+// fieldList 自建递归遍历生成字段清单, 按类型缓存。
+// 列名规则与 reflectx TypeMap 展开兼容: db tag 名优先 (忽略 tag 选项),
+// 否则字段名, 统一小写 (对齐 mapper.NewMapperFunc("db", strings.ToLower))。
+func fieldList(t reflect.Type) []kvField {
+	if v, ok := fieldListCache.Load(t); ok {
+		return v.([]kvField)
+	}
+	var out []kvField
+	var walk func(t reflect.Type, prefix []int)
+	walk = func(t reflect.Type, prefix []int) {
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			// 对齐 reflectx: unexported 的匿名字段仍可展开 (嵌入类型可为小写), 普通 unexported 跳过
+			if (!f.IsExported() && !f.Anonymous) || f.Tag.Get("db") == "-" {
+				continue
+			}
+			path := append(append([]int{}, prefix...), i)
+			ft := f.Type
+			for ft.Kind() == reflect.Ptr {
+				ft = ft.Elem()
+			}
+			if ft.Kind() != reflect.Struct || isAtomicColumn(ft) {
+				// 基本类型 / []byte / 原子类型 (Valuer、time.Time 及别名): 单列
+				out = append(out, kvField{
+					key:       columnName(f),
+					path:      path,
+					omitempty: hasOmitempty(f),
+				})
+				continue
+			}
+			// 非原子 struct (值或指针): 递归展开子字段
+			walk(ft, path)
+		}
+	}
+	walk(t, nil)
+	fieldListCache.Store(t, out)
+	return out
 }
 
 // timeType time.Time 是 database/sql 原生参数类型 (不实现 driver.Valuer)。
@@ -206,12 +255,28 @@ func isAtomicColumn(t reflect.Type) bool {
 	return t.ConvertibleTo(timeType) || t.Implements(valuableType)
 }
 
-// valuerAncestorDepth 沿展开链从近到远找第一个实现 driver.Valuer 的祖先字段深度
-
 // isZeroValue 指针解引用后的零值判断 (omitempty 语义)。
 func isZeroValue(v reflect.Value) bool {
 	for v.Kind() == reflect.Ptr && !v.IsNil() {
 		v = v.Elem()
 	}
 	return v.IsZero()
+}
+
+// columnName 取字段的 db 列名: db tag 优先 (忽略选项), 否则字段名; 统一小写 (与 mapper 一致)。
+func columnName(f reflect.StructField) string {
+	if tag := f.Tag.Get("db"); tag != "" {
+		return strings.ToLower(strings.Split(tag, ",")[0])
+	}
+	return strings.ToLower(f.Name)
+}
+
+// hasOmitempty 判断 db tag 是否携带 omitempty 选项。
+func hasOmitempty(f reflect.StructField) bool {
+	for _, o := range strings.Split(f.Tag.Get("db"), ",")[1:] {
+		if o == "omitempty" {
+			return true
+		}
+	}
+	return false
 }

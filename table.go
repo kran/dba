@@ -29,7 +29,7 @@ func (t *TableDef) Fields(fields ...string) *TableDef {
 // Struct extracts column names from the model's executor tags, replacing any
 // previously set fields. Embed structs (like Timestamped) are expanded.
 func (t *TableDef) Struct(model any) *TableDef {
-	t.fields, _, _ = ToKeyValue(model, false)
+	t.fields, _, _ = ColumnsAndValues(model, false)
 	return t
 }
 

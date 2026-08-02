@@ -1,6 +1,7 @@
 package dba_test
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -8,7 +9,7 @@ import (
 	"github.com/kran/dba"
 )
 
-// ── ToKeyValue 回归: 原子 struct 类型 (time.Time 及别名 / driver.Valuer) 必须整体作为单列 ──
+// ── ColumnsAndValues 回归: 原子 struct 类型 (time.Time 及别名 / driver.Valuer) 必须整体作为单列 ──
 
 type tkvEmbedded struct {
 	CreateTs int64 `db:"create_ts,omitempty"`
@@ -16,9 +17,9 @@ type tkvEmbedded struct {
 
 type tkvModel struct {
 	tkvEmbedded
-	ID        int64     `db:"id,omitempty"`
-	Name      string    `db:"name"`
-	CreatedAt time.Time `db:"created_at,omitempty"`  // 值类型 time.Time (曾静默丢失)
+	ID        int64      `db:"id,omitempty"`
+	Name      string     `db:"name"`
+	CreatedAt time.Time  `db:"created_at,omitempty"` // 值类型 time.Time (曾静默丢失)
 	UpdatedAt *time.Time `db:"updated_at,omitempty"` // 指针 time.Time
 	Inner     struct {
 		At  time.Time `db:"inner_at,omitempty"` // 嵌套 struct 内的 time.Time
@@ -34,7 +35,7 @@ type tkvAliasModel struct {
 
 func mustKV(t *testing.T, m any, omitempty bool) ([]string, []any) {
 	t.Helper()
-	keys, vals, err := dba.ToKeyValue(m, omitempty)
+	keys, vals, err := dba.ColumnsAndValues(m, omitempty)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func findVal(t *testing.T, keys []string, vals []any, want string) any {
 	return nil
 }
 
-func TestToKeyValueTimeValue(t *testing.T) {
+func TestColumnsAndValuesTimeValue(t *testing.T) {
 	now := time.Now()
 	m := tkvModel{
 		tkvEmbedded: tkvEmbedded{CreateTs: 1},
@@ -97,7 +98,7 @@ func TestToKeyValueTimeValue(t *testing.T) {
 	}
 }
 
-func TestToKeyValueTimeOmitempty(t *testing.T) {
+func TestColumnsAndValuesTimeOmitempty(t *testing.T) {
 	m := tkvModel{Name: "x"} // CreatedAt/UpdatedAt 零值
 
 	keys, _ := mustKV(t, m, true)
@@ -120,7 +121,7 @@ func TestToKeyValueTimeOmitempty(t *testing.T) {
 	}
 }
 
-func TestToKeyValueTimeAlias(t *testing.T) {
+func TestColumnsAndValuesTimeAlias(t *testing.T) {
 	now := time.Now()
 	keys, vals := mustKV(t, tkvAliasModel{At: tkvAliasTime(now)}, true)
 	if len(keys) != 1 || keys[0] != "at" {
@@ -136,7 +137,26 @@ func TestToKeyValueTimeAlias(t *testing.T) {
 	}
 }
 
-func TestToKeyValuePlainStruct(t *testing.T) {
+// 匿名嵌入 time.Time: reflectx 不展开未导出字段 (wall/ext/loc), 父条目保留, 作为原子列写入
+func TestColumnsAndValuesEmbeddedTime(t *testing.T) {
+	type embedTime struct {
+		time.Time
+		X int `db:"x"`
+	}
+	now := time.Now()
+	keys, vals := mustKV(t, embedTime{Time: now, X: 1}, false)
+	if len(keys) != 2 {
+		t.Fatalf("keys mismatch: %v", keys)
+	}
+	if v := findVal(t, keys, vals, "time"); v.(time.Time) != now {
+		t.Fatalf("embedded time mismatch: %v", v)
+	}
+	if v := findVal(t, keys, vals, "x"); v.(int) != 1 {
+		t.Fatalf("x mismatch: %v", v)
+	}
+}
+
+func TestColumnsAndValuesPlainStruct(t *testing.T) {
 	type plain struct {
 		A int    `db:"a"`
 		B string `db:"b,omitempty"`
@@ -147,5 +167,73 @@ func TestToKeyValuePlainStruct(t *testing.T) {
 	}
 	if !reflect.DeepEqual(vals, []any{1}) {
 		t.Fatalf("vals mismatch: %v", vals)
+	}
+}
+
+// ── 边角场景补充 ──
+
+type edgePtrBase struct {
+	PB int `db:"pb"`
+}
+
+type edgeSub struct {
+	S int `db:"s"`
+}
+
+type edgeModel struct {
+	Raw   []byte            `db:"raw"`          // []byte 单列
+	JSON  json.RawMessage   `db:"json_payload"` // []byte 别名
+	NoTag string            // 无 tag → 列名 "notag"
+	M     map[string]string `db:"m"`     // map 单列
+	Items []int             `db:"items"` // 切片单列
+	Any   any               `db:"any"`   // interface{} 单列
+	Deep  struct {
+		L2 struct {
+			L3 int `db:"l3"`
+		} `db:"l2"`
+	} `db:"deep"` // 三层嵌套 → 仅产出叶子 l3
+	PtrEmbed *edgePtrBase // 指针嵌入 → 展开 pb
+	NilSub   *edgeSub     `db:"nil_sub"` // nil 指针 struct → 展开 s=0
+	PP       **time.Time  `db:"pp"`      // 指针链
+}
+
+func TestColumnsAndValuesEdgeCases(t *testing.T) {
+	now := time.Now()
+	pp := &now
+	m := edgeModel{
+		Raw:      []byte("x"),
+		JSON:     json.RawMessage(`{"a":1}`),
+		NoTag:    "n",
+		M:        map[string]string{"k": "v"},
+		Items:    []int{1, 2},
+		Any:      "iface",
+		PtrEmbed: &edgePtrBase{PB: 7},
+		PP:       &pp,
+	}
+	m.Deep.L2.L3 = 3
+
+	keys, vals, err := dba.ColumnsAndValues(&m, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"raw", "json_payload", "notag", "m", "items", "any", "l3", "pb", "s", "pp"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("keys mismatch:\n got %v\nwant %v", keys, want)
+	}
+	// nil 指针 struct 展开为子列零值 (FieldByIndexesReadOnly 安全穿越 nil)
+	if v := findVal(t, keys, vals, "s"); v.(int) != 0 {
+		t.Fatalf("nil sub should expand to zero value, got %v", v)
+	}
+	// 指针链取值 (二级指针整体绑定, driver 层不支持, 但取值与列集正确)
+	if v := findVal(t, keys, vals, "pp"); v.(**time.Time) != &pp {
+		t.Fatalf("pp mismatch: %v", v)
+	}
+	// 列名集合: 不含中间 struct 列名
+	for _, banned := range []string{"deep", "l2", "ptr_embed", "nil_sub"} {
+		for _, k := range keys {
+			if k == banned {
+				t.Fatalf("column %q should not appear, keys=%v", banned, keys)
+			}
+		}
 	}
 }

@@ -379,11 +379,12 @@ func TestInsert_EmbeddedStruct_Flattens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT  INTO "users" ("name", "created_at") VALUES ($1, $2)`
+	// 列顺序 = 字段声明序 (嵌入 struct 按声明位置展开)
+	want := `INSERT  INTO "users" ("created_at", "name") VALUES ($1, $2)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
-	if len(args) != 2 || args[1] != "" || args[0] != "alice" {
+	if len(args) != 2 || args[0] != "" || args[1] != "alice" {
 		t.Errorf("args: %v", args)
 	}
 }
@@ -400,12 +401,13 @@ func TestInsert_EmbeddedStruct_WithNullString(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT  INTO "users" ("name", "created_at") VALUES ($1, $2)`
+	// 列顺序 = 字段声明序 (嵌入 struct 按声明位置展开)
+	want := `INSERT  INTO "users" ("created_at", "name") VALUES ($1, $2)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
 	nameBob := gosql.NullString{String: "bob", Valid: true}
-	if len(args) != 2 || args[1] != "" || args[0] != nameBob {
+	if len(args) != 2 || args[0] != "" || args[1] != nameBob {
 		t.Errorf("args: %v", args)
 	}
 }

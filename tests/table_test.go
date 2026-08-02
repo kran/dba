@@ -132,11 +132,12 @@ func TestExtractCols_Embedded(t *testing.T) {
 		ID   int    `db:"id"`
 		Name string `db:"name"`
 	}
-	cols, _, _ := dba.ToKeyValue(M{}, true)
+	cols, _, _ := dba.ColumnsAndValues(M{}, true)
 	if len(cols) != 3 {
 		t.Fatalf("expected 3 cols, got %d: %v", len(cols), cols)
 	}
-	expect := []string{"id", "name", "create_ts"}
+	// 列顺序 = 字段声明序 (TS 嵌入在首, create_ts 在前)
+	expect := []string{"create_ts", "id", "name"}
 	for i, c := range cols {
 		if c != expect[i] {
 			t.Errorf("cols[%d] = %q, want %q", i, c, expect[i])
