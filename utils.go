@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx/reflectx"
 )
@@ -50,7 +51,7 @@ func Scalar[T any](d *SQL) (T, bool, error) {
 	return v, found, err
 }
 
-// The query must contain ${F:...} so that Page can swap the field list for COUNT(1).
+// Page the query must contain ${F:...} so that Page can swap the field list for COUNT(1).
 func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 	if page < 1 {
 		page = 1
@@ -145,7 +146,6 @@ func ToKeyValue(model any, omitempty bool) ([]string, []any, error) {
 		return nil, nil, fmt.Errorf("dba: ToKV expects struct or map[string]any, got %s", rv.Kind())
 	}
 
-	valuableType := reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 	structMap := mapper.TypeMap(rv.Type())
 	keys := make([]string, 0, len(structMap.Index))
 	vals := make([]any, 0, len(structMap.Index))
@@ -160,28 +160,27 @@ func ToKeyValue(model any, omitempty bool) ([]string, []any, error) {
 			continue
 		}
 
-		// skip sub-fields of Valuer types — treat the whole thing as an atomic column
+		// 原子 struct 类型 (driver.Valuer 实现者如 sql.NullString, 以及 database/sql
+		// 原生参数类型 time.Time) 的子字段由 reflectx 展开, 必须跳过 — 父字段会作为
+		// 整体原子列由本循环的单级条目写入。time.Time 不实现 Valuer, 需显式特判,
+		// 否则值类型时间字段会在 INSERT/UPDATE 中静默丢失。
 		if len(fi.Index) > 1 {
 			parentField := rv.Type().FieldByIndex(fi.Index[:len(fi.Index)-1])
-			if parentField.Type.Implements(valuableType) {
+			if isAtomicColumn(parentField.Type) {
 				continue
 			}
 		}
 
 		val := reflectx.FieldByIndexesReadOnly(rv, fi.Index)
 
-		// skip non-Valuer structs — sub-fields are already expanded by reflectx
-		if val.Kind() == reflect.Struct && !val.Type().Implements(valuableType) {
+		// skip 非原子 struct — 子字段已由 reflectx 展开 (递归 case)
+		if val.Kind() == reflect.Struct && !isAtomicColumn(val.Type()) {
 			continue
 		}
 
 		// omitempty: skip zero-valued fields
 		if _, hasOmitempty := fi.Options["omitempty"]; hasOmitempty && omitempty {
-			v := val
-			for v.Kind() == reflect.Ptr && !v.IsNil() {
-				v = v.Elem()
-			}
-			if v.IsZero() {
+			if isZeroValue(val) {
 				continue
 			}
 		}
@@ -191,4 +190,27 @@ func ToKeyValue(model any, omitempty bool) ([]string, []any, error) {
 	}
 
 	return keys, vals, nil
+}
+
+// timeType time.Time 是 database/sql 原生参数类型 (不实现 driver.Valuer)。
+var timeType = reflect.TypeOf(time.Time{})
+
+// valuableType driver.Valuer 接口类型。
+var valuableType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
+
+// isAtomicColumn 判断 struct 类型是否应整体作为单列写入:
+// 1) 实现 driver.Valuer (sql.NullString/NullInt64/自定义类型)
+// 2) time.Time — database/sql 原生参数类型, 不实现 Valuer, 必须显式特判
+func isAtomicColumn(t reflect.Type) bool {
+	return t == timeType || t.Implements(valuableType)
+}
+
+// valuerAncestorDepth 沿展开链从近到远找第一个实现 driver.Valuer 的祖先字段深度
+
+// isZeroValue 指针解引用后的零值判断 (omitempty 语义)。
+func isZeroValue(v reflect.Value) bool {
+	for v.Kind() == reflect.Ptr && !v.IsNil() {
+		v = v.Elem()
+	}
+	return v.IsZero()
 }
