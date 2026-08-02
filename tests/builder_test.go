@@ -2,8 +2,6 @@ package dba_test
 
 import (
 	"testing"
-
-	"github.com/kran/dba"
 )
 
 func TestAdd_NoMacro(t *testing.T) {
@@ -110,7 +108,7 @@ func TestAdd_RawMacro(t *testing.T) {
 func TestAdd_InSlice(t *testing.T) {
 	q, _ := newQ(t)
 	ids := []int{1, 2, 3}
-	sql, args, err := q.Add("WHERE id IN (#{1})", dba.Expand(ids)).ToSQL()
+	sql, args, err := q.Add("WHERE id IN (#{1|expand})", ids).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}

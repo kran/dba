@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -68,6 +69,8 @@ type Node struct {
 type SQL struct {
 	mainNodes []Node
 	varNodes  map[string]Node
+	pipes     map[string]Pipe // 管道注册表 (实例级, copy-on-write)
+	macros    map[byte]string // 宏前缀 → 管道名 (实例级, copy-on-write)
 
 	executor   sqlx.ExtContext
 	pool       *sqlx.DB
@@ -98,6 +101,8 @@ func NewFromSqlx(db *sqlx.DB) *SQL {
 	return &SQL{
 		mainNodes:  make([]Node, 0),
 		varNodes:   make(map[string]Node),
+		pipes:      maps.Clone(defaultPipes),
+		macros:     maps.Clone(defaultMacros),
 		executor:   db,
 		pool:       db,
 		ctx:        context.Background(),
@@ -141,13 +146,11 @@ func (d *SQL) copy() *SQL {
 		copyId:     d.copyId + 1,
 	}
 	copy(clone.mainNodes, d.mainNodes)
-	for k, v := range d.varNodes {
-		clone.varNodes[k] = v
-	}
-	if len(d.hooks) > 0 {
-		clone.hooks = make([]Hook, len(d.hooks))
-		copy(clone.hooks, d.hooks)
-	}
+	// 低频写字段: 共享只读, 写操作 (Var/Vars/Use/Register*) 各自 copy-on-write
+	clone.varNodes = d.varNodes
+	clone.pipes = d.pipes
+	clone.macros = d.macros
+	clone.hooks = d.hooks
 	return clone
 }
 
@@ -190,7 +193,7 @@ func (d *SQL) Unsafe() *SQL {
 // Use returns a new builder with the given hooks appended.
 func (d *SQL) Use(mw ...Hook) *SQL {
 	clone := d.copy()
-	clone.hooks = append(clone.hooks, mw...)
+	clone.hooks = append(append([]Hook{}, clone.hooks...), mw...) // copy-on-write
 	return clone
 }
 
@@ -230,6 +233,7 @@ func (d *SQL) Var(key string, query string, args ...any) *SQL {
 	if clone.err != nil {
 		return clone
 	}
+	clone.varNodes = maps.Clone(clone.varNodes) // copy-on-write
 	clone.varNodes[key] = Node{RawSQL: query, Args: args}
 	return clone
 }
@@ -239,154 +243,11 @@ func (d *SQL) Vars(vars map[string]Node) *SQL {
 	if clone.err != nil {
 		return clone
 	}
+	clone.varNodes = maps.Clone(clone.varNodes) // copy-on-write
 	for k, v := range vars {
 		clone.varNodes[k] = v
 	}
 	return clone
-}
-
-func (d *SQL) build() (string, []any, error) {
-	if d.err != nil {
-		return "", nil, d.err
-	}
-
-	var sqlBuilder strings.Builder
-	var finalArgs []any
-	argCount := 0
-
-	sqlBuilder.Grow(512)
-
-	// 渲染: token 列表 → SQL 文本 + 参数 (扫描已由 lex 完成)
-	bw := &buildArgWriter{sqlBuilder: &sqlBuilder, argCount: &argCount, formater: d.formater, finalArgs: &finalArgs}
-	var render func(items []item, args []any) error
-	render = func(items []item, args []any) error {
-		for _, it := range items {
-			switch it.typ {
-			case itemText:
-				sqlBuilder.WriteString(it.val)
-
-			case itemParam:
-				// 参数绑定: 默认单值 ([]byte 单参数给数据库 byte 类型, 非 byte slice
-				// 交由驱动层报错); 传 dba.Arg (如 Expand/Null/Raw) 时委托 WriteTo 渲染。
-				argVal, err := resolveArg(args, it.val)
-				if err != nil {
-					return err
-				}
-				if a, ok := argVal.(Arg); ok {
-					if err := a.WriteTo(bw); err != nil {
-						return err
-					}
-				} else {
-					argCount++
-					sqlBuilder.WriteString(d.formater(argCount))
-					finalArgs = append(finalArgs, argVal)
-				}
-
-			case itemVar:
-				// 变量引用: 注册内容递归渲染, 否则默认文本, 否则报错
-				parts := strings.SplitN(it.val, ":", 2)
-				key := strings.TrimSpace(parts[0])
-				if varNode, ok := d.varNodes[key]; ok {
-					sub, err := lex(varNode.RawSQL)
-					if err != nil {
-						return err
-					}
-					if err := render(sub, varNode.Args); err != nil {
-						return err
-					}
-				} else if len(parts) == 2 {
-					sub, err := lex(strings.TrimSpace(parts[1]))
-					if err != nil {
-						return err
-					}
-					if err := render(sub, nil); err != nil {
-						return err
-					}
-				} else {
-					return fmt.Errorf("dba: undefined variable ${%s}", key)
-				}
-
-			case itemIdent:
-				argVal, err := resolveArg(args, it.val)
-				if err != nil {
-					return err
-				} else if argVal == nil {
-					return fmt.Errorf("dba: @{%s} resolved to nil", it.val)
-				}
-				sqlBuilder.WriteString(d.quoter(fmt.Sprintf("%v", argVal)))
-
-			case itemRaw:
-				argVal, err := resolveArg(args, it.val)
-				if err != nil {
-					return err
-				} else if argVal == nil {
-					return fmt.Errorf("dba: !{%s} resolved to nil", it.val)
-				}
-				sqlBuilder.WriteString(fmt.Sprintf("%v", argVal))
-			}
-		}
-		return nil
-	}
-
-	for i, node := range d.mainNodes {
-		if i > 0 {
-			sqlBuilder.WriteString("\n")
-		}
-		items, err := lex(node.RawSQL)
-		if err != nil {
-			return "", nil, err
-		}
-		if err := render(items, node.Args); err != nil {
-			return "", nil, err
-		}
-	}
-
-	return sqlBuilder.String(), finalArgs, nil
-}
-
-func resolveArg(args []any, content string) (any, error) {
-	if idx, err := strconv.Atoi(content); err == nil {
-		if idx < 1 || idx > len(args) {
-			return nil, fmt.Errorf("dba: index %d out of bounds", idx)
-		}
-		return args[idx-1], nil
-	}
-	if len(args) == 0 {
-		return nil, fmt.Errorf("dba: no args")
-	}
-	return extractNamedArg(args[len(args)-1], content)
-}
-
-func extractNamedArg(src any, name string) (any, error) {
-	rv := reflect.ValueOf(src)
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			return nil, fmt.Errorf("dba: named args source is nil pointer")
-		}
-		rv = rv.Elem()
-	}
-
-	if rv.Kind() == reflect.Map {
-		if rv.Type().Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("dba: map key must be string")
-		}
-		val := rv.MapIndex(reflect.ValueOf(name))
-		if !val.IsValid() {
-			return nil, fmt.Errorf("dba: named arg '%s' not found in map", name)
-		}
-		return val.Interface(), nil
-	}
-
-	if rv.Kind() == reflect.Struct {
-		fm := mapper.TypeMap(rv.Type())
-		fi := fm.GetByPath(name)
-		if fi == nil {
-			return nil, fmt.Errorf("dba: field '%s' not found in struct", name)
-		}
-		return reflectx.FieldByIndexesReadOnly(rv, fi.Index).Interface(), nil
-	}
-
-	return nil, fmt.Errorf("dba: named args source must be struct or map")
 }
 
 // Batch generates parenthesized value groups for bulk INSERT.
@@ -722,4 +583,159 @@ func (d *SQL) Transaction(fn func(*SQL) error) error {
 	}
 
 	return tx.Commit()
+}
+
+func (d *SQL) build() (string, []any, error) {
+	if d.err != nil {
+		return "", nil, d.err
+	}
+
+	var sqlBuilder strings.Builder
+	var finalArgs []any
+	argCount := 0
+
+	sqlBuilder.Grow(512)
+
+	// 渲染: token 列表 → SQL 文本 + 参数 (扫描已由 lex 完成)
+	bw := &buildRenderCtx{sqlBuilder: &sqlBuilder, argCount: &argCount, formater: d.formater, finalArgs: &finalArgs, quoter: d.quoter}
+	var render func(items []item, args []any) error
+	render = func(items []item, args []any) error {
+		for _, it := range items {
+			switch it.kind {
+			case itemText:
+				sqlBuilder.WriteString(it.val)
+
+			case itemMacro:
+				if err := d.renderMacro(bw, render, it, args); err != nil {
+					return err
+				}
+			default:
+				// itemError 已被 lex 过滤, 此处兜底未来扩展的 token 类型
+				return fmt.Errorf("dba: unexpected token kind %d", it.kind)
+			}
+		}
+		return nil
+	}
+
+	for i, node := range d.mainNodes {
+		if i > 0 {
+			sqlBuilder.WriteString("\n")
+		}
+		items, err := lex(node.RawSQL, d.macros)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := render(items, node.Args); err != nil {
+			return "", nil, err
+		}
+	}
+
+	return sqlBuilder.String(), finalArgs, nil
+}
+
+func resolveArg(args []any, content string) (any, error) {
+	if idx, err := strconv.Atoi(content); err == nil {
+		if idx < 1 || idx > len(args) {
+			return nil, fmt.Errorf("dba: index %d out of bounds", idx)
+		}
+		return args[idx-1], nil
+	}
+	if len(args) == 0 {
+		return nil, fmt.Errorf("dba: no args")
+	}
+	return extractNamedArg(args[len(args)-1], content)
+}
+
+func extractNamedArg(src any, name string) (any, error) {
+	rv := reflect.ValueOf(src)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil, fmt.Errorf("dba: named args source is nil pointer")
+		}
+		rv = rv.Elem()
+	}
+
+	if rv.Kind() == reflect.Map {
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("dba: map key must be string")
+		}
+		val := rv.MapIndex(reflect.ValueOf(name))
+		if !val.IsValid() {
+			return nil, fmt.Errorf("dba: named arg '%s' not found in map", name)
+		}
+		return val.Interface(), nil
+	}
+
+	if rv.Kind() == reflect.Struct {
+		fm := mapper.TypeMap(rv.Type())
+		fi := fm.GetByPath(name)
+		if fi == nil {
+			return nil, fmt.Errorf("dba: field '%s' not found in struct", name)
+		}
+		return reflectx.FieldByIndexesReadOnly(rv, fi.Index).Interface(), nil
+	}
+
+	return nil, fmt.Errorf("dba: named args source must be struct or map")
+}
+
+// renderMacro 渲染宏 token: '#' = 管道容器, '$' = 变量 (结构层), 其他 = 宏别名。
+func (d *SQL) renderMacro(bw RenderCtx, render func([]item, []any) error, it item, args []any) error {
+	switch it.prefix {
+	case '#':
+		// 管道容器: 内容 "key|pipe" (无 | = bind 默认)
+		key, pipe := splitKeyPipe(it.val)
+		argVal, err := resolveArg(args, key)
+		if err != nil {
+			return err
+		}
+		fn, ok := d.pipes[pipe]
+		if !ok {
+			return fmt.Errorf("dba: unknown pipe %q", pipe)
+		}
+		return fn(bw, argVal)
+
+	case '$':
+		// 变量引用: 注册内容递归渲染, 否则默认文本, 否则报错
+		parts := strings.SplitN(it.val, ":", 2)
+		key := strings.TrimSpace(parts[0])
+		if varNode, ok := d.varNodes[key]; ok {
+			sub, err := lex(varNode.RawSQL, d.macros)
+			if err != nil {
+				return err
+			}
+			return render(sub, varNode.Args)
+		}
+		if len(parts) == 2 {
+			sub, err := lex(strings.TrimSpace(parts[1]), d.macros)
+			if err != nil {
+				return err
+			}
+			return render(sub, nil)
+		}
+		return fmt.Errorf("dba: undefined variable ${%s}", key)
+
+	default:
+		// 宏别名: 前缀 → 管道名, 值 = resolveArg(内容)
+		pipe, ok := d.macros[it.prefix]
+		if !ok {
+			return fmt.Errorf("dba: unknown macro %c", it.prefix)
+		}
+		argVal, err := resolveArg(args, it.val)
+		if err != nil {
+			return err
+		}
+		fn, ok := d.pipes[pipe]
+		if !ok {
+			return fmt.Errorf("dba: macro %c refers to unknown pipe %q", it.prefix, pipe)
+		}
+		return fn(bw, argVal)
+	}
+}
+
+// splitKeyPipe 分割 "#{key|pipe}" 内容; 两端空白容忍 (与 $ 变量一致), 无 | 时 pipe = "bind"。
+func splitKeyPipe(content string) (key, pipe string) {
+	if idx := strings.IndexByte(content, '|'); idx >= 0 {
+		return strings.TrimSpace(content[:idx]), strings.TrimSpace(content[idx+1:])
+	}
+	return strings.TrimSpace(content), "bind"
 }

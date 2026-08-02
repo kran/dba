@@ -4,23 +4,21 @@ import (
 	"fmt"
 )
 
-// itemType 词法 token 类型。
-type itemType int
+// itemKind 词法 token 类型。
+type itemKind int
 
 const (
-	itemError itemType = iota // 错误 (值=错误信息)
-	itemText                  // 普通文本 (值=原文)
-	itemParam                 // #{...} 参数绑定 (值=key/序号)
-	itemVar                   // ${...} 变量引用 (值=变量名)
-	itemIdent                 // @{...} 标识符引用 (值=key)
-	itemRaw                   // !{...} 原始文本 (值=key)
+	itemText  itemKind = iota // 普通文本 (值=原文)
+	itemMacro                 // 宏 (值=内容, prefix=前缀字符)
+	itemError                 // 错误 (值=错误信息)
 )
 
 // item 词法 token。
 type item struct {
-	typ itemType
-	pos int    // 起始位置 (错误定位)
-	val string // 文本原文或宏内容
+	kind   itemKind
+	prefix byte   // 宏前缀 (# $ @ ! % ...), 仅 itemMacro
+	pos    int    // 起始位置 (错误定位)
+	val    string // 文本原文或宏内容
 }
 
 // stateFn 词法状态函数: 返回下一个状态, nil 结束。
@@ -32,24 +30,26 @@ type stateFn func(*lexer) stateFn
 // 词法规则:
 //   - 单引号/双引号/反引号字面量整体跳过 (引号内 { } 不参与宏解析),
 //     支持 \x 转义与 ” 双写引号; 引号逻辑单点实现 (lexQuote), 正文与宏内容共用
-//   - 双写转义: ##{ → 字面 #{ (四个前缀通用)
+//   - 双写转义: XX{ → 字面 X{ (X 为宏前缀, 由 macros 表驱动)
 //   - 宏内容以第一个"引号外"的 } 结束
 type lexer struct {
 	input  string
-	pos    int     // 当前扫描位置
-	start  int     // 当前 token 起点
-	prefix byte    // 当前宏前缀 (# $ @ !), lexMacro 期间有效
-	prev   stateFn // lexQuote 闭合后返回的外层状态
+	pos    int             // 当前扫描位置
+	start  int             // 当前 token 起点
+	prefix byte            // 当前宏前缀, lexMacro 期间有效
+	prev   stateFn         // lexQuote 闭合后返回的外层状态
+	macros map[byte]string // 宏前缀表: 前缀 → 管道名 (仅用于识别)
 	items  []item
 }
 
 // lex 扫描模板, 返回 token 列表; 词法错误以 error 返回。
-func lex(input string) ([]item, error) {
-	l := &lexer{input: input}
+// macros 为宏前缀表 ('#'/'$' 为保留前缀, 恒为宏; 其余查表)。
+func lex(input string, macros map[byte]string) ([]item, error) {
+	l := &lexer{input: input, macros: macros}
 	for state := stateFn(lexText); state != nil; {
 		state = state(l)
 	}
-	if n := len(l.items); n > 0 && l.items[n-1].typ == itemError {
+	if n := len(l.items); n > 0 && l.items[n-1].kind == itemError {
 		return nil, fmt.Errorf("%s", l.items[n-1].val)
 	}
 	return l.items, nil
@@ -64,41 +64,35 @@ func (l *lexer) next() byte {
 }
 
 // emit 提交 start..pos 为 token (零拷贝切片), start 前进。
-func (l *lexer) emit(typ itemType) {
+func (l *lexer) emit(kind itemKind) {
 	if l.pos > l.start {
-		l.items = append(l.items, item{typ, l.start, l.input[l.start:l.pos]})
+		l.items = append(l.items, item{kind: kind, pos: l.start, val: l.input[l.start:l.pos]})
 	}
 	l.start = l.pos
 }
 
 // emitRange 提交指定区间为 token (双写转义需要), start 前进到 end。
-func (l *lexer) emitRange(typ itemType, start, end int) {
+func (l *lexer) emitRange(kind itemKind, start, end int) {
 	if end > start {
-		l.items = append(l.items, item{typ, start, l.input[start:end]})
+		l.items = append(l.items, item{kind: kind, pos: start, val: l.input[start:end]})
 	}
 	l.start = end
 }
 
 func (l *lexer) errorf(format string, args ...any) stateFn {
-	l.items = append(l.items, item{itemError, l.start, fmt.Sprintf(format, args...)})
+	l.items = append(l.items, item{kind: itemError, pos: l.start, val: fmt.Sprintf(format, args...)})
 	return nil
 }
 
 // ── 状态函数 ─────────────────────────────────────────────
 
-// macroPrefix 前缀字符 → token 类型; 未知前缀返回 ok=false (按普通文本处理)。
-func macroPrefix(prefix byte) (itemType, bool) {
-	switch prefix {
-	case '#':
-		return itemParam, true
-	case '$':
-		return itemVar, true
-	case '@':
-		return itemIdent, true
-	case '!':
-		return itemRaw, true
+// isMacroPrefix 判断字符是否为宏前缀: '#'/'$' 保留, 其余查注册宏表。
+func isMacroPrefix(prefix byte, macros map[byte]string) bool {
+	if prefix == '#' || prefix == '$' {
+		return true
 	}
-	return 0, false
+	_, ok := macros[prefix]
+	return ok
 }
 
 // lexText 普通文本: 遇引号 → lexQuote, 遇宏前缀+{ → lexMacro, EOF 收尾。
@@ -116,14 +110,14 @@ func lexText(l *lexer) stateFn {
 				continue
 			}
 			prefix := l.input[l.pos-1]
-			if _, ok := macroPrefix(prefix); !ok {
+			if !isMacroPrefix(prefix, l.macros) {
 				l.next()
 				continue
 			}
-			// 双写转义: ##{ → 字面 #{ (文本区间去掉一个前缀字符)
+			// 双写转义: XX{ → 字面 X{ (文本区间去掉一个前缀字符)
 			if l.pos >= 2 && l.input[l.pos-2] == prefix {
 				l.emitRange(itemText, l.start, l.pos-2)
-				l.items = append(l.items, item{itemText, l.pos - 2, string(prefix) + "{"})
+				l.items = append(l.items, item{kind: itemText, pos: l.pos - 2, val: string(prefix) + "{"})
 				l.pos++ // 消费 {
 				l.start = l.pos
 				continue
@@ -154,9 +148,8 @@ func lexMacro(l *lexer) stateFn {
 			return lexQuote
 
 		case '}':
-			kind, _ := macroPrefix(l.prefix)
 			// start 指向 { 位置, 内容 = (start, pos) 之间
-			l.items = append(l.items, item{kind, l.start, l.input[l.start+1 : l.pos]})
+			l.items = append(l.items, item{kind: itemMacro, prefix: l.prefix, pos: l.start, val: l.input[l.start+1 : l.pos]})
 			l.pos++ // 消费 }
 			l.start = l.pos
 			l.prefix = 0

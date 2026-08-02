@@ -46,12 +46,12 @@ query, args, _ := sqlx.In("SELECT * FROM users WHERE id IN (?)", ids)
 // dba — same thing, cleaner
 q.Add("SELECT * FROM users WHERE status = #{1}", "active").
     AddIf(name != "", "AND name = #{1}", name).
-    Add("AND id IN (#{1})", dba.Expand(ids)) // explicit slice expansion
+    Add("AND id IN (#{1|expand})", ids) // explicit slice expansion
 ```
 
 | Pain point | Raw sqlx | dba |
 |------------|----------|-----|
-| `IN (?)` expansion | `sqlx.In()` in a separate call | `dba.Expand()` explicit expansion |
+| `IN (?)` expansion | `sqlx.In()` in a separate call | `#{1|expand}` explicit expansion |
 | Conditional clauses | String concat + manual arg spread | `AddIf(cond, ...)` |
 | Count + data pagination | Two manually maintained SQL strings | `Page[T](base, page, size)` |
 | Identifier quoting | Manual per dialect | `@{1}` auto-quotes for PG/MySQL/SQLite |
@@ -67,23 +67,40 @@ q.Add("SELECT * FROM users WHERE status = #{1}", "active").
 |--------|-------------|---------|
 | `#{1}` | Positional parameter — **single value, never expands** | `"WHERE id = #{1}"` → `"WHERE id = $1"` |
 | `#{name}` | Named parameter from map/struct | `"WHERE id = #{id}"` + `map["id"]` |
-| `dba.Expand(v)` | Arg wrapper — expand slice/array into separate params | `"IN (#{1})"` + `dba.Expand([]int{1,2})` → `$1, $2` |
+| `#{1|pipe}` | Pipe — custom value rendering | `"IN (#{1|expand})"` + `[]int{1,2}` → `$1, $2` |
+| `@{1}` / `!{1}` | Macro aliases: `@`→`ident`, `!`→`raw` | `"SELECT @{1}"` → `SELECT "name"` |
 | `${key:default}` | Fillable slot with fallback | `"${order:ORDER BY id}"` → overridable |
-| `@{1}` / `@{name}` | Dialect-aware quoting | `"SELECT @{1}"` → `"SELECT \"name\""` |
-| `!{1}` / `!{name}` | Raw text injection (use sparingly) | `"ORDER BY !{1}"` → `"ORDER BY id DESC"` |
-| `##{text}` | Escape — output `#{text}` literally | `"##{1}"` → literal `"#{1}"` |
+| `XX{...}` | Double prefix escapes to literal (any registered macro) | `"##{1}"` → literal `"#{1}"` |
 
-Parameters are **single values by default** — expansion and other rendering is explicit via
-the `dba.Arg` interface (a parameter-side wrapper, mirroring `sql.NamedArg`):
+Parameters are **single values by default** — rendering is explicit via **pipes**:
 
 - `#{1}` binds one value as-is: `[]byte` works as a single binary param (BLOB/BINARY columns),
   and passing a non-byte slice is left to the driver to reject (`unsupported type []int`).
-- `dba.Expand(v)` expands a slice/array into separate params — use it for `IN` lists:
-  `IN (#{1})` + `dba.Expand([]int{1,2,3})` → `$1, $2, $3`. No more `sqlx.In`.
-  An empty slice expands to zero params (`IN ()`, rejected by the database);
-  `dba.ExpandOrNull(v)` renders `(NULL)` instead.
-- `dba.Null()` renders `NULL`; `dba.Raw(s)` injects raw text at a parameter position.
-- Custom semantics: implement `dba.Arg` (`WriteTo(w dba.ArgWriter) error`) — no framework changes needed.
+- `#{1|expand}` expands a slice/array into separate params — use it for `IN` lists:
+  `IN (#{1|expand})` + `[]int{1,2,3}` → `$1, $2, $3`. No more `sqlx.In`.
+  An empty slice expands to zero params (`IN ()`, rejected by the database).
+- `#{1|raw}` injects raw text; `#{1|ident}` quotes an identifier. (NULL: pass `nil` — `#{1}` binds it directly)
+- `@{1}` and `!{1}` are macro aliases for `ident` / `raw` — the template-side shortcuts.
+- Whitespace is tolerated around keys and pipes: `#{1| expand }` ≡ `#{1|expand}`.
+
+### Custom pipes & macros
+
+Pipes are the single extension point for value rendering — register once, use in any template:
+
+```go
+q := db.RegisterPipe("upper", func(ctx dba.RenderCtx, v any) error {
+    ctx.AddParam(strings.ToUpper(v.(string)))
+    return nil
+})
+q.Add("WHERE name = #{1|upper}", "bob") // → $1 = "BOB"
+
+// Macro aliases: any prefix → pipe (local dialect, shared semantics)
+q = q.RegisterMacro('^', "upper")
+q.Add("WHERE name = ^{1}", "bob") // same as #{1|upper}
+```
+
+Both are instance-scoped and copy-on-write — no global state, no concurrency issues.
+`#` and `$` are reserved prefixes; `@`/`!` are built-in macros (`ident`/`raw`).
 
 ### Methods
 

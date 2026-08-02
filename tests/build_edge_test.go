@@ -116,8 +116,8 @@ func TestBuild_NamedArgFromStructPointer(t *testing.T) {
 func TestBuild_SliceMultipleInClauses(t *testing.T) {
 	q, _ := newQ(t)
 	sql, args, err := q.
-		Add("WHERE id IN (#{1})", dba.Expand([]int{1, 2})).
-		Add("AND name IN (#{1})", dba.Expand([]string{"a", "b", "c"})).
+		Add("WHERE id IN (#{1|expand})", []int{1, 2}).
+		Add("AND name IN (#{1|expand})", []string{"a", "b", "c"}).
 		ToSQL()
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestBuild_NilArg(t *testing.T) {
 func TestBuild_PointerToSlice(t *testing.T) {
 	q, _ := newQ(t)
 	ids := []int{10, 20}
-	sql, args, err := q.Add("WHERE id IN (#{1})", dba.Expand(ids)).ToSQL()
+	sql, args, err := q.Add("WHERE id IN (#{1|expand})", ids).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,27 +428,12 @@ func TestBuild_RawNilError(t *testing.T) {
 func TestBuild_EmptySlice_ExpandsToEmpty(t *testing.T) {
 	// Expand 空 slice: 展开 0 个参数, 生成 IN () —— 框架不拦截, 由数据库报语法错误
 	q, _ := newQ(t)
-	sql, args, err := q.Add("WHERE id IN (#{1})", dba.Expand([]int{})).ToSQL()
+	sql, args, err := q.Add("WHERE id IN (#{1|expand})", []int{}).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sql != "WHERE id IN ()" {
 		t.Errorf("got  %q\nwant %q", sql, "WHERE id IN ()")
-	}
-	if len(args) != 0 {
-		t.Errorf("args: %v", args)
-	}
-}
-
-// ExpandOrNull 空 slice 渲染为 (NULL)
-func TestBuild_EmptySlice_ExpandOrNull(t *testing.T) {
-	q, _ := newQ(t)
-	sql, args, err := q.Add("WHERE id IN (#{1})", dba.ExpandOrNull([]int{})).ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "WHERE id IN (NULL)" {
-		t.Errorf("got  %q\nwant %q", sql, "WHERE id IN (NULL)")
 	}
 	if len(args) != 0 {
 		t.Errorf("args: %v", args)
@@ -652,7 +637,7 @@ func TestBuild_ByteSlice_NoWrap_SingleParam(t *testing.T) {
 // Expand([]byte): 与其他 slice 一致, 逐字节展开 (显式意图自担)
 func TestBuild_ByteSlice_Expand_ByteParams(t *testing.T) {
 	q, _ := newQ(t)
-	sql, args, err := q.Add("WHERE id IN (#{1})", dba.Expand([]byte("ab"))).ToSQL()
+	sql, args, err := q.Add("WHERE id IN (#{1|expand})", []byte("ab")).ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,25 +649,10 @@ func TestBuild_ByteSlice_Expand_ByteParams(t *testing.T) {
 	}
 }
 
-// Null() 渲染 NULL 字面量, 无绑定参数
-func TestBuild_NullArg(t *testing.T) {
-	q, _ := newQ(t)
-	sql, args, err := q.Add("WHERE deleted_at = #{1}", dba.Null()).ToSQL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sql != "WHERE deleted_at = NULL" {
-		t.Errorf("got  %q\nwant %q", sql, "WHERE deleted_at = NULL")
-	}
-	if len(args) != 0 {
-		t.Errorf("args: %v", args)
-	}
-}
-
 // Raw() 参数位置原始文本
 func TestBuild_RawArg(t *testing.T) {
 	q, _ := newQ(t)
-	sql, args, err := q.Add("WHERE created_at > #{1}", dba.Raw("NOW()")).ToSQL()
+	sql, args, err := q.Add("WHERE created_at > #{1|raw}", "NOW()").ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,19 +664,16 @@ func TestBuild_RawArg(t *testing.T) {
 	}
 }
 
-// 用户自定义 Arg: 通过实现接口扩展, 无需修改 dba
-type upperArg string
-
-func (u upperArg) WriteTo(w dba.ArgWriter) error {
-	w.WriteString("UPPER(")
-	w.AddParam(string(u))
-	w.WriteString(")")
-	return nil
-}
-
-func TestBuild_CustomArg(t *testing.T) {
+// 用户自定义管道: RegisterPipe 扩展渲染语义
+func TestBuild_CustomPipe(t *testing.T) {
 	q, _ := newQ(t)
-	sql, args, err := q.Add("WHERE name = #{1}", upperArg("bob")).ToSQL()
+	q = q.RegisterPipe("wrap_upper", func(ctx dba.RenderCtx, v any) error {
+		ctx.WriteString("UPPER(")
+		ctx.AddParam(v)
+		ctx.WriteString(")")
+		return nil
+	})
+	sql, args, err := q.Add("WHERE name = #{1|wrap_upper}", "bob").ToSQL()
 	if err != nil {
 		t.Fatal(err)
 	}
