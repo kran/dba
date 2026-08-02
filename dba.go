@@ -298,6 +298,18 @@ func (d *SQL) build() (string, []any, error) {
 			end += start
 			content := str[start+1 : end]
 
+			// inINContext: # 参数是否紧跟左括号 (IN 场景)。展开仅属于 IN 语法
+			// (对齐 GORM clause.Expr 的 afterParenthesis), 值绑定位置永不展开 slice。
+			inINContext := false
+			if prefix == '#' {
+				for j := start - 2; j >= i; j-- {
+					if c := str[j]; c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+						inINContext = c == '('
+						break
+					}
+				}
+			}
+
 			switch prefix {
 			case '#':
 				argVal, err := resolveArg(n.Args, content)
@@ -313,7 +325,10 @@ func (d *SQL) build() (string, []any, error) {
 					rv = rv.Elem()
 				}
 
-				if argVal != nil && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+				if argVal != nil && inINContext && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) &&
+					rv.Type().Elem().Kind() != reflect.Uint8 {
+					// 仅 IN 上下文展开 slice; []byte (含 json.RawMessage 等别名) 在任何位置
+					// 都是单个二进制参数, 绝不逐字节展开
 					if rv.Len() == 0 {
 						return fmt.Errorf("dba: empty slice passed to parameter #{%s}", content)
 					}

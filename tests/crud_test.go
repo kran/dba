@@ -2,6 +2,9 @@ package dba_test
 
 import (
 	gosql "database/sql"
+	"encoding/json"
+	"reflect"
+
 	"github.com/kran/dba"
 	"testing"
 )
@@ -604,9 +607,9 @@ func TestVal_String(t *testing.T) {
 	}
 }
 
-// TestUpdate_SliceExpanded 切片参数会被 sqlx.In 展开，这是预期行为。
-// 若要传 PG Array/JSON 等列值，需用 pq.Array、json.RawMessage 等包装类型。
-func TestUpdate_SliceExpanded(t *testing.T) {
+// TestUpdate_SliceAsSingleParam 值位置的 slice 是单个绑定参数 (展开只属于 IN 语法)。
+// 列值传 []byte / json.RawMessage 直接可用, 不需要包装类型。
+func TestUpdate_SliceAsSingleParam(t *testing.T) {
 	q, _ := newQ(t)
 	data := map[string]any{
 		"name": "极客",
@@ -616,18 +619,17 @@ func TestUpdate_SliceExpanded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// tags 切片被展开为两个 ?，共 4 个参数
-	wantSQL := "UPDATE \"users\" SET \"name\"=$1, \"tags\"=$2, $3 WHERE\nid = $4"
+	wantSQL := "UPDATE \"users\" SET \"name\"=$1, \"tags\"=$2 WHERE\nid = $3"
 	if sql != wantSQL {
 		t.Errorf("sql:\n got  %q\n want %q", sql, wantSQL)
 	}
-	if len(args) != 4 {
-		t.Errorf("args: got %d %v, want 4", len(args), args)
+	if len(args) != 3 {
+		t.Errorf("args: got %d %v, want 3", len(args), args)
 	}
 }
 
-// TestInsert_SliceExpanded 同上，Insert 场景
-func TestInsert_SliceExpanded(t *testing.T) {
+// TestInsert_SliceAsSingleParam 同上, Insert 场景
+func TestInsert_SliceAsSingleParam(t *testing.T) {
 	q, _ := newQ(t)
 	data := map[string]any{
 		"name": "极客",
@@ -637,13 +639,13 @@ func TestInsert_SliceExpanded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// tags 切片被展开，VALUES 从 2 个 ? 变成 3 个
-	wantSQL := `INSERT  INTO "users" ("name", "tags") VALUES ($1, $2, $3)`
+	// 值位置 slice 单参数绑定, 列数 = 值数
+	wantSQL := `INSERT  INTO "users" ("name", "tags") VALUES ($1, $2)`
 	if sql != wantSQL {
 		t.Errorf("sql:\n got  %q\n want %q", sql, wantSQL)
 	}
-	if len(args) != 3 {
-		t.Errorf("args: got %d %v, want 3", len(args), args)
+	if len(args) != 2 || args[0] != "极客" || !reflect.DeepEqual(args[1], []string{"golang", "sql"}) {
+		t.Errorf("args: got %v, want 2 args with tags slice", args)
 	}
 }
 
@@ -707,4 +709,42 @@ func TestDelete_Exec(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected 1 row, got %d", count)
 	}
+}
+
+// []byte 字段必须作为单个二进制参数绑定, 不得按 IN 场景展开 (曾把字节数组拆成逐字节参数)
+func TestInsert_ByteSlice_AsSingleParam(t *testing.T) {
+	type bytesUser struct {
+		ID   int64  `db:"id"`
+		Data []byte `db:"data"`
+	}
+	q, _ := newQ(t)
+	sql, args, err := q.Insert("users", bytesUser{ID: 1, Data: []byte("hello")}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `INSERT  INTO "users" ("id", "data") VALUES ($1, $2)`
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 2 || string(args[1].([]byte)) != "hello" {
+		t.Errorf("args: %v", args)
+	}
+}
+
+// json.RawMessage 别名同样单参数
+func TestInsert_JSONRawMessage_SingleParam(t *testing.T) {
+	type jsonUser struct {
+		ID  int64           `db:"id"`
+		Raw json.RawMessage `db:"raw"`
+	}
+	q, _ := newQ(t)
+	raw := json.RawMessage(`{"a":1}`)
+	sql, args, err := q.Insert("users", jsonUser{ID: 2, Raw: raw}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(args) != 2 || string(args[1].(json.RawMessage)) != `{"a":1}` {
+		t.Errorf("args: %v", args)
+	}
+	_ = sql
 }

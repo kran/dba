@@ -610,3 +610,35 @@ func TestBuild_ImmutableVarDoesNotAffectBase(t *testing.T) {
 		t.Errorf("v2: %q", sql3)
 	}
 }
+
+// []byte 在 IN 括号内也是单个二进制参数, 不逐字节展开
+func TestBuild_INByteSlice_SingleParam(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Add("WHERE id IN (#{1})", []byte("abc")).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "WHERE id IN ($1)"
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 1 || string(args[0].([]byte)) != "abc" {
+		t.Errorf("args: %v", args)
+	}
+}
+
+// 值位置 (非 IN 上下文) slice 是单个绑定参数
+func TestBuild_SliceOutsideIN_SingleParam(t *testing.T) {
+	q, _ := newQ(t)
+	sql, args, err := q.Add("WHERE id = #{1}", []int{1, 2}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "WHERE id = $1"
+	if sql != want {
+		t.Errorf("got  %q\nwant %q", sql, want)
+	}
+	if len(args) != 1 {
+		t.Errorf("args: %v", args)
+	}
+}
