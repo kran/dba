@@ -1,12 +1,14 @@
-package dba
+package dba_test
 
 import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/kran/dba"
 )
 
-// ── ToKeyValue 回归: Valuer 类型字段 (time.Time) 必须整体作为原子列 ──
+// ── ToKeyValue 回归: 原子 struct 类型 (time.Time 及别名 / driver.Valuer) 必须整体作为单列 ──
 
 type tkvEmbedded struct {
 	CreateTs int64 `db:"create_ts,omitempty"`
@@ -14,19 +16,25 @@ type tkvEmbedded struct {
 
 type tkvModel struct {
 	tkvEmbedded
-	ID        int64      `db:"id,omitempty"`
-	Name      string     `db:"name"`
-	CreatedAt time.Time  `db:"created_at,omitempty"` // 值类型 time.Time (曾静默丢失)
-	UpdatedAt *time.Time `db:"updated_at,omitempty"` // 指针 time.Time (一直正常)
+	ID        int64     `db:"id,omitempty"`
+	Name      string    `db:"name"`
+	CreatedAt time.Time `db:"created_at,omitempty"`  // 值类型 time.Time (曾静默丢失)
+	UpdatedAt *time.Time `db:"updated_at,omitempty"` // 指针 time.Time
 	Inner     struct {
 		At  time.Time `db:"inner_at,omitempty"` // 嵌套 struct 内的 time.Time
 		Num int       `db:"inner_num"`
 	} // 非匿名 struct, reflectx 展开子字段
 }
 
+type tkvAliasTime time.Time
+
+type tkvAliasModel struct {
+	At tkvAliasTime `db:"at,omitempty"` // time.Time 别名 (ConvertibleTo 语义)
+}
+
 func mustKV(t *testing.T, m any, omitempty bool) ([]string, []any) {
 	t.Helper()
-	keys, vals, err := ToKeyValue(m, omitempty)
+	keys, vals, err := dba.ToKeyValue(m, omitempty)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +85,7 @@ func TestToKeyValueTimeValue(t *testing.T) {
 	if v := findVal(t, keys, vals, "create_ts"); v.(int64) != 1 {
 		t.Fatalf("create_ts mismatch: %v", v)
 	}
-	// 无 time.Time 重复项 (原子化只写一次)
+	// 无 time.Time 重复项
 	count := 0
 	for _, k := range keys {
 		if k == "created_at" {
@@ -112,6 +120,22 @@ func TestToKeyValueTimeOmitempty(t *testing.T) {
 	}
 }
 
+func TestToKeyValueTimeAlias(t *testing.T) {
+	now := time.Now()
+	keys, vals := mustKV(t, tkvAliasModel{At: tkvAliasTime(now)}, true)
+	if len(keys) != 1 || keys[0] != "at" {
+		t.Fatalf("alias time should be atomic column, keys=%v", keys)
+	}
+	if v, ok := vals[0].(tkvAliasTime); !ok || time.Time(v) != now {
+		t.Fatalf("at mismatch: %v", vals[0])
+	}
+	// 零值 + omitempty: 跳过
+	keys2, _ := mustKV(t, tkvAliasModel{}, true)
+	if len(keys2) != 0 {
+		t.Fatalf("zero alias time should be omitted, keys=%v", keys2)
+	}
+}
+
 func TestToKeyValuePlainStruct(t *testing.T) {
 	type plain struct {
 		A int    `db:"a"`
@@ -123,26 +147,5 @@ func TestToKeyValuePlainStruct(t *testing.T) {
 	}
 	if !reflect.DeepEqual(vals, []any{1}) {
 		t.Fatalf("vals mismatch: %v", vals)
-	}
-}
-
-// time.Time 别名类型 (type MyTime time.Time) 同样必须作为原子列 (ConvertibleTo 语义)
-func TestToKeyValueTimeAlias(t *testing.T) {
-	type MyTime time.Time
-	type aliasModel struct {
-		At MyTime `db:"at,omitempty"`
-	}
-	now := time.Now()
-	keys, vals := mustKV(t, aliasModel{At: MyTime(now)}, true)
-	if len(keys) != 1 || keys[0] != "at" {
-		t.Fatalf("alias time should be atomic column, keys=%v", keys)
-	}
-	if v, ok := vals[0].(MyTime); !ok || time.Time(v) != now {
-		t.Fatalf("at mismatch: %v", vals[0])
-	}
-	// 零值 + omitempty: 跳过
-	keys2, _ := mustKV(t, aliasModel{}, true)
-	if len(keys2) != 0 {
-		t.Fatalf("zero alias time should be omitted, keys=%v", keys2)
 	}
 }

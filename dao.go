@@ -177,6 +177,8 @@ func (d *Dao[T]) Delete(where string, args ...any) (int64, error) {
 }
 
 // GetByID fetches a single record by primary key.
+// 未找到时返回 (nil, nil) —— “无结果”是正常业务结果而非错误 (不返回 sql.ErrNoRows);
+// 调用方必须先判 nil 再解引用。
 func (d *Dao[T]) GetByID(id any) (*T, error) {
 	var v T
 	found, err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+d.quotedPK+" = #{1}", id).Get(&v)
@@ -187,6 +189,8 @@ func (d *Dao[T]) GetByID(id any) (*T, error) {
 }
 
 // Get fetches a single record by condition.
+// 未找到时返回 (nil, nil) —— “无结果”是正常业务结果而非错误 (不返回 sql.ErrNoRows);
+// 调用方必须先判 nil 再解引用。
 func (d *Dao[T]) Get(where string, args ...any) (*T, error) {
 	var v T
 	found, err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).Get(&v)
