@@ -23,19 +23,16 @@ type Dao[T any] struct {
 	quotedTbl string
 	pk        string
 	quotedPK  string
-	tableDef  *TableDef
 }
 
 // NewDao creates a Dao bound to the given table. Default primary key is "id".
 func NewDao[T any](q *SQL, table string) *Dao[T] {
-	tableDef := Table(table, "").Struct(new(T))
 	return &Dao[T]{
 		q:         q,
 		table:     table,
 		quotedTbl: q.quoter(table),
 		pk:        "id",
 		quotedPK:  q.quoter("id"),
-		tableDef:  tableDef,
 	}
 }
 
@@ -46,12 +43,26 @@ func (d *Dao[T]) copy() *Dao[T] {
 		quotedTbl: d.quotedTbl,
 		pk:        d.pk,
 		quotedPK:  d.quotedPK,
-		tableDef:  d.tableDef,
 	}
 }
 
+// Vars 生成表别名引用变量 (表名/主键在 DAO 一处维护):
+//
+//	${u.as}  → ` + "`users` AS `u`" + `   (FROM/JOIN 表声明)
+//	${u}     → ` + "`u`" + `              (别名引用: ${u}.name / ${u}.*)
+//	${u.pk}  → ` + "`u`.`id`" + `          (主键引用: 主键列名 DAO.PK 维护)
+//
+// 列引用不生成 (列名裸写: `${u}.email`), 列集不属于 DAO 的维护职责。
+// 无 alias (单表场景) 返回 nil, 表名裸写即可。
 func (d *Dao[T]) Vars(alias string) map[string]Node {
-	return d.tableDef.Alias(alias).Build()
+	if alias == "" {
+		return nil
+	}
+	m := make(map[string]Node, 3)
+	m[alias+".as"] = Node{RawSQL: "@{1} AS @{2}", Args: []any{d.table, alias}}
+	m[alias] = Node{RawSQL: "@{1}", Args: []any{alias}}
+	m[alias+".pk"] = Node{RawSQL: "@{1}.@{2}", Args: []any{alias, d.pk}}
+	return m
 }
 
 func (d *Dao[T]) WithCtx(ctx context.Context) *Dao[T] {
