@@ -199,10 +199,11 @@ var timeType = reflect.TypeOf(time.Time{})
 var valuableType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 
 // isAtomicColumn 判断 struct 类型是否应整体作为单列写入:
-// 1) 实现 driver.Valuer (sql.NullString/NullInt64/自定义类型)
-// 2) time.Time — database/sql 原生参数类型, 不实现 Valuer, 必须显式特判
+//  1. 实现 driver.Valuer (sql.NullString/NullInt64/自定义类型)
+//  2. time.Time 及其可转换别名 — database/sql 原生参数类型, 不实现 Valuer;
+//     用 ConvertibleTo 而非 ==, 覆盖 type MyTime time.Time 这类别名 (对齐 GORM schema.ParseField)
 func isAtomicColumn(t reflect.Type) bool {
-	return t == timeType || t.Implements(valuableType)
+	return t.ConvertibleTo(timeType) || t.Implements(valuableType)
 }
 
 // valuerAncestorDepth 沿展开链从近到远找第一个实现 driver.Valuer 的祖先字段深度

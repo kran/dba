@@ -125,3 +125,24 @@ func TestToKeyValuePlainStruct(t *testing.T) {
 		t.Fatalf("vals mismatch: %v", vals)
 	}
 }
+
+// time.Time 别名类型 (type MyTime time.Time) 同样必须作为原子列 (ConvertibleTo 语义)
+func TestToKeyValueTimeAlias(t *testing.T) {
+	type MyTime time.Time
+	type aliasModel struct {
+		At MyTime `db:"at,omitempty"`
+	}
+	now := time.Now()
+	keys, vals := mustKV(t, aliasModel{At: MyTime(now)}, true)
+	if len(keys) != 1 || keys[0] != "at" {
+		t.Fatalf("alias time should be atomic column, keys=%v", keys)
+	}
+	if v, ok := vals[0].(MyTime); !ok || time.Time(v) != now {
+		t.Fatalf("at mismatch: %v", vals[0])
+	}
+	// 零值 + omitempty: 跳过
+	keys2, _ := mustKV(t, aliasModel{}, true)
+	if len(keys2) != 0 {
+		t.Fatalf("zero alias time should be omitted, keys=%v", keys2)
+	}
+}
