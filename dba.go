@@ -8,6 +8,7 @@ import (
 	"maps"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -32,11 +33,12 @@ func Expr(sql string, args ...any) SQLExpr {
 	return SQLExpr{Sql: sql, Args: args}
 }
 
-// Hook wraps an ExecFunc in onion-style middleware.
-type Hook func(next ExecFunc) ExecFunc
+// LogFunc SQL 执行日志回调: 每次执行后调用一次 (begin 为执行开始时间,
+// 观察者自行计算耗时/开 span; 不改变执行流, panic 不影响执行结果)。
+type LogFunc func(ctx context.Context, begin time.Time, query string, args []any, err error)
 
-// ExecFunc is the execution function passed through the middleware chain.
-type ExecFunc func(ctx context.Context, query string, args []any) (any, error)
+// execFunc 实际执行函数 (内部): 调用底层 sqlx/database 完成查询。
+type execFunc func(ctx context.Context, query string, args []any) (any, error)
 
 // Formater generates a placeholder for the n-th parameter.
 type Formater func(idx int) string
@@ -75,7 +77,7 @@ type SQL struct {
 	quoter     Quoter
 	formater   Formater
 	driverName string
-	hooks      []Hook
+	logger     LogFunc // 执行日志回调 (nil = 静默)
 	copyId     int
 }
 
@@ -146,7 +148,7 @@ func (d *SQL) copy() *SQL {
 	clone.varNodes = d.varNodes
 	clone.pipes = d.pipes
 	clone.macros = d.macros
-	clone.hooks = d.hooks
+	clone.logger = d.logger
 	return clone
 }
 
@@ -186,23 +188,24 @@ func (d *SQL) Unsafe() *SQL {
 	return clone
 }
 
-// Use returns a new builder with the given hooks appended.
-func (d *SQL) Use(mw ...Hook) *SQL {
+// SetLogger 设置执行日志回调 (nil 关闭)。copy-on-write。
+func (d *SQL) SetLogger(fn LogFunc) *SQL {
 	clone := d.copy()
-	clone.hooks = append(append([]Hook{}, clone.hooks...), mw...) // copy-on-write
+	clone.logger = fn
 	return clone
 }
 
-func (d *SQL) execute(fn ExecFunc) (any, error) {
+func (d *SQL) execute(fn execFunc) (any, error) {
 	query, args, err := d.build()
 	if err != nil {
 		return nil, err
 	}
-	exec := fn
-	for i := len(d.hooks) - 1; i >= 0; i-- {
-		exec = d.hooks[i](exec)
+	begin := time.Now()
+	result, err := fn(d.ctx, query, args)
+	if d.logger != nil {
+		d.logger(d.ctx, begin, query, args, err)
 	}
-	return exec(d.ctx, query, args)
+	return result, err
 }
 
 // Add appends a SQL fragment and returns a new builder.

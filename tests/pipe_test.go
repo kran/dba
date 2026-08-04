@@ -1,8 +1,10 @@
 package dba_test
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kran/dba"
 )
@@ -124,16 +126,15 @@ func TestVarCopyOnWriteIsolation(t *testing.T) {
 	toSQL(t, q2.Add("SELECT 1 ${cond}"), "SELECT 1 WHERE a = 1")
 }
 
-func TestUseCopyOnWriteIsolation(t *testing.T) {
+func TestSetLoggerCopyOnWriteIsolation(t *testing.T) {
 	q, _ := newQ(t)
-	q2 := q.Use(func(next dba.ExecFunc) dba.ExecFunc {
-		return next
+	q2 := q.SetLogger(func(ctx context.Context, begin time.Time, query string, args []any, err error) {
 	})
-	// hooks 隔离: 原实例无 hook 也能正常执行 (编译/运行不炸即可)
+	// logger 隔离: 原实例无 logger 也能正常执行 (编译/运行不炸即可)
 	if _, err := q.Add("SELECT 1").Get(&struct{}{}); err != nil {
 		t.Logf("get err: %v", err) // sqlite 无表, 报错正常; 只要不 panic
 	}
-	// 新实例有 hook 且正常 (ToSQL 不炸)
+	// 新实例有 logger 且正常 (ToSQL 不炸)
 	if _, _, err := q2.Add("SELECT 1").ToSQL(); err != nil {
 		t.Fatalf("toSQL: %v", err)
 	}
