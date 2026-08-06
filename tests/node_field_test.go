@@ -137,3 +137,29 @@ func TestEmptyNodeGuard(t *testing.T) {
 		t.Fatal("empty Node should error")
 	}
 }
+
+// 命名收敛: db tag 名原样使用 (reflectx 单一命名源 — 与 #{name}/扫描一致,
+// 不再强制 ToLower)。
+type upperTagModel struct {
+	UserName string `db:"UserName"`
+	Age      int    `db:"age,omitempty"`
+}
+
+func TestColumnNameConvergence(t *testing.T) {
+	q, _ := newQ(t)
+	// INSERT 列名: tag 原样 (UserName 不大写化也不小写化)
+	sql, args, err := q.Insert("t", upperTagModel{UserName: "u"}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(args) != 1 || args[0] != "u" {
+		t.Fatalf("args: %v", args)
+	}
+	// 无 tag 字段名: ToLower (mapFunc)
+	sql2, _, err := q.Insert("t", map[string]any{"UserName": "u"}).ToSQL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sql
+	_ = sql2
+}

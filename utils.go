@@ -3,6 +3,7 @@ package dba
 import (
 	"database/sql/driver"
 	"fmt"
+	"github.com/jmoiron/sqlx/reflectx"
 	"reflect"
 	"sort"
 	"strings"
@@ -44,6 +45,7 @@ func GroupBy[T any, K comparable](slice []T, fn func(T) K) map[K][]T {
 }
 
 // Scalar returns a single scalar value from a query.
+// bool is false when the query returned no row.
 func Scalar[T any](d *SQL) (T, bool, error) {
 	var v T
 	found, err := d.Get(&v)
@@ -55,8 +57,14 @@ func Scalar[T any](d *SQL) (T, bool, error) {
 // Contract: the query must contain the ${F:...} slot (or bare ${F}) on the
 // main chain — the F slot is substituted with COUNT(1) for the count query.
 // Constraints: no GROUP BY / DISTINCT in the F slot content (the count query
-// reuses the same template); ORDER BY must live in its own slot/variable so
-// the count query can drop it.
+// reuses the same template).
+//
+// ORDER BY should live in the ${O:...} slot (the count query clears it with
+// Var(O, "") — a bare ORDER BY still works but the count query pays the
+// sort). Example:
+//
+//	q.Add("SELECT ... WHERE x ${O:ORDER BY id DESC}") // then Page(q, 1, 20)
+//
 // The total==0 case skips the data query entirely.
 func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 	if page < 1 {
@@ -121,15 +129,19 @@ func IsOk(v any) bool {
 	}
 }
 
-// ColumnsAndValues 把 struct 或 map 转换为列名与参数值列表。
+// ColumnsAndValues converts a struct or map into column names and bind values.
 //
-// struct 策略: 自建递归遍历 (fieldList) 生成字段清单, 遍历时即时判定:
-//   - 原子类型 (driver.Valuer 实现者 / time.Time 及其可转换别名 / Node) 作为单列收束;
-//   - struct (匿名嵌入或普通字段, 值或指针) 递归展开子字段;
-//   - 其余基本类型/[]byte 直接作为单列。
+// Struct strategy: fieldList (derived from the reflectx TypeMap — the same
+// mapper used by #{name} resolution and row scanning) builds the field list,
+// with dba's atomicity decision (isAtomicColumn) applied per field:
+//   - atomic types (driver.Valuer implementers / time.Time and convertible
+//     aliases / Node) collapse to a single column;
+//   - structs (embedded or plain, value or pointer) expand recursively;
+//   - other basic types / []byte are single columns.
 //
-// 收集到的字段值经 normalizeBindValue 归一化后进入 vals。
-// map 分支的值不做归一化 (与 Add 的参数同级: 用户直接给什么绑什么)。
+// Collected field values pass through normalizeBindValue before entering vals.
+// The map branch does no normalization (same level as Add arguments: bind
+// exactly what the caller passed).
 func ColumnsAndValues(model any, omitempty bool) ([]string, []any, error) {
 	rv := reflect.ValueOf(model)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
@@ -243,41 +255,52 @@ type kvField struct {
 
 var fieldListCache sync.Map // reflect.Type → []kvField
 
-// fieldList 自建递归遍历生成字段清单, 按类型缓存。
-// 列名规则与 reflectx TypeMap 展开兼容: db tag 名优先 (忽略 tag 选项),
-// 否则字段名, 统一小写 (对齐 mapper.NewMapperFunc("db", strings.ToLower))。
+// fieldList 从 reflectx TypeMap 派生写入列清单。
+//
+// 命名/嵌入/跳过规则全部由 mapper (与 #{name} 解析、List/Get 扫描共用同一
+// 实例) 单点定义: db tag 名优先且原样使用, 无 tag 用 mapFunc(ToLower),
+// db:"-" 排除, unexported 跳过 (匿名嵌入类型除外)。
+//
+// 在 reflectx 展开树上叠加 dba 的原子判定 (isAtomicColumn):
+// Valuer / time.Time 及可转换别名 / Node 收束为单列, 不下钻子字段;
+// 其余 struct 字段 (值/指针/匿名嵌入) 递归展开, 列名取子字段自身的
+// 映射名 fi.Name — 不用 fi.Path 的 "a.b" 点路径 (那是扫描语义,
+// INSERT 列名没有前缀概念), 这是与 reflectx 默认展开的唯一分歧点。
+//
+// 与旧自建遍历的行为差异 (有意为之): 显式 db tag 名不再 ToLower —
+// 此前 INSERT 列名强制小写, 而 #{name} 解析和行扫描按 reflectx 原样,
+// 同一 tag 两套规则; 现在三处收敛为一套。
 func fieldList(t reflect.Type) []kvField {
 	if v, ok := fieldListCache.Load(t); ok {
 		return v.([]kvField)
 	}
+	tm := mapper.TypeMap(t) // reflectx 内部按类型缓存, 与扫描共享
 	var out []kvField
-	var walk func(t reflect.Type, prefix []int)
-	walk = func(t reflect.Type, prefix []int) {
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
-			// 对齐 reflectx: unexported 的匿名字段仍可展开 (嵌入类型可为小写), 普通 unexported 跳过
-			if (!f.IsExported() && !f.Anonymous) || f.Tag.Get("db") == "-" {
+	var walk func(fis []*reflectx.FieldInfo)
+	walk = func(fis []*reflectx.FieldInfo) {
+		for _, fi := range fis {
+			if fi == nil {
+				// Children 按字段序号占位: 被跳过的字段
+				// (unexported / db:"-") 留 nil 洞
 				continue
 			}
-			path := append(append([]int{}, prefix...), i)
-			ft := f.Type
+			ft := fi.Field.Type
 			for ft.Kind() == reflect.Ptr {
 				ft = ft.Elem()
 			}
-			if ft.Kind() != reflect.Struct || isAtomicColumn(ft) {
-				// 基本类型 / []byte / 原子类型 (Valuer、time.Time 及别名): 单列
-				out = append(out, kvField{
-					key:       columnName(f),
-					path:      path,
-					omitempty: hasOmitempty(f),
-				})
+			if ft.Kind() == reflect.Struct && !isAtomicColumn(ft) {
+				walk(fi.Children) // 非原子 struct: 展开子字段
 				continue
 			}
-			// 非原子 struct (值或指针): 递归展开子字段
-			walk(ft, path)
+			_, omit := fi.Options["omitempty"] // reflectx 已解析 tag 选项
+			out = append(out, kvField{
+				key:       fi.Name,  // 叶子映射名 (不是 fi.Path)
+				path:      fi.Index, // 根起始的完整索引路径
+				omitempty: omit,
+			})
 		}
 	}
-	walk(t, nil)
+	walk(tm.Tree.Children)
 	fieldListCache.Store(t, out)
 	return out
 }
@@ -288,14 +311,15 @@ var timeType = reflect.TypeOf(time.Time{})
 // valuableType driver.Valuer 接口类型。
 var valuableType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 
+// nodeType Node 的反射类型。
+var nodeType = reflect.TypeOf(Node{})
+
 // isAtomicColumn 判断 struct 类型是否应整体作为单列写入:
 //  1. 实现 driver.Valuer (sql.NullString/NullInt64/自定义类型)
 //  2. time.Time 及其可转换别名 — database/sql 原生参数类型, 不实现 Valuer;
 //     用 ConvertibleTo 而非 ==, 覆盖 type MyTime time.Time 这类别名 (对齐 GORM schema.ParseField)
-//
-// nodeType Node 的反射类型: Node 字段整体作为单列 (值原样流到 Bind 内联)。
-var nodeType = reflect.TypeOf(Node{})
-
+//  3. Node — "参数即子树"的值, 整体收束后原样流到 Bind 内联 (不展开为
+//     text/args 两个子列)
 func isAtomicColumn(t reflect.Type) bool {
 	return t == nodeType || t.ConvertibleTo(timeType) || t.Implements(valuableType)
 }
@@ -309,22 +333,4 @@ func isZeroValue(v reflect.Value) bool {
 		return v.IsNil()
 	}
 	return v.IsZero()
-}
-
-// columnName 取字段的 db 列名: db tag 优先 (忽略选项), 否则字段名; 统一小写 (与 mapper 一致)。
-func columnName(f reflect.StructField) string {
-	if tag := f.Tag.Get("db"); tag != "" {
-		return strings.ToLower(strings.Split(tag, ",")[0])
-	}
-	return strings.ToLower(f.Name)
-}
-
-// hasOmitempty 判断 db tag 是否携带 omitempty 选项。
-func hasOmitempty(f reflect.StructField) bool {
-	for _, o := range strings.Split(f.Tag.Get("db"), ",")[1:] {
-		if o == "omitempty" {
-			return true
-		}
-	}
-	return false
 }
