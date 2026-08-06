@@ -18,7 +18,7 @@ func TestRegisterPipe(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		ctx.AddParam(strings.ToUpper(v.(string)))
+		ctx.Bind(strings.ToUpper(v.(string)))
 		return nil
 	})
 	args := toSQL(t, q.Add("WHERE name = #{1|upper}", "bob"), "WHERE name = $1")
@@ -35,7 +35,7 @@ func TestRegisterPipe_Isolation(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		ctx.AddParam(strings.ToUpper(v.(string)))
+		ctx.Bind(strings.ToUpper(v.(string)))
 		return nil
 	})
 	toSQL(t, q2.Add("WHERE name = #{1|upper}", "bob"), "WHERE name = $1")
@@ -62,7 +62,7 @@ func TestRegisterMacro(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		ctx.AddParam(strings.ToUpper(v.(string)))
+		ctx.Bind(strings.ToUpper(v.(string)))
 		return nil
 	}).RegisterMacro('^', "upper")
 	args := toSQL(t, q.Add("WHERE name = ^{1}", "bob"), "WHERE name = $1")
@@ -99,7 +99,7 @@ func TestRegisterMacro_Escape(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		ctx.AddParam(strings.ToUpper(v.(string)))
+		ctx.Bind(strings.ToUpper(v.(string)))
 		return nil
 	}).RegisterMacro('^', "upper")
 	toSQL(t, q.Add("SELECT ^^{1}"), "SELECT ^{1}")

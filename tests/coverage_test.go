@@ -150,24 +150,23 @@ func TestCov_ListGetMap(t *testing.T) {
 	db.Exec("CREATE TABLE cov_map (id INTEGER PRIMARY KEY, name TEXT)")
 	db.Exec("INSERT INTO cov_map VALUES (1, 'a'), (2, 'b')")
 
-	// List 到 []map[string]any (MapScan 分支)
-	var ms []map[string]any
-	if err := q.Add("SELECT * FROM cov_map").List(&ms); err != nil {
+	// ListMap: 动态列查询
+	ms, err := q.Add("SELECT * FROM cov_map").ListMap()
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ms) != 2 {
-		t.Fatalf("map list: %d rows", len(ms))
+		t.Fatalf("ListMap: %d rows", len(ms))
 	}
-	// Get 到 map (MapScan 分支)
-	var m map[string]any
-	found, err := q.Add("SELECT * FROM cov_map WHERE id = #{1}", 1).Get(&m)
+	// GetMap: 单行 map
+	m, found, err := q.Add("SELECT * FROM cov_map WHERE id = #{1}", 1).GetMap()
 	if err != nil || !found {
-		t.Fatalf("map get: found=%v err=%v", found, err)
+		t.Fatalf("GetMap: found=%v err=%v", found, err)
 	}
-	// Get 到 map 未找到
-	found, err = q.Add("SELECT * FROM cov_map WHERE id = #{1}", 99).Get(&m)
-	if err != nil || found {
-		t.Fatalf("map get missing: found=%v err=%v", found, err)
+	// GetMap 未找到
+	m, found, err = q.Add("SELECT * FROM cov_map WHERE id = #{1}", 99).GetMap()
+	if err != nil || found || m != nil {
+		t.Fatalf("GetMap missing: found=%v m=%v err=%v", found, m, err)
 	}
 }
 
@@ -215,7 +214,7 @@ func TestCov_AddVarEdges(t *testing.T) {
 	}
 	// Vars 批量注册
 	if _, _, err := q.Vars(map[string]dba.Node{
-		"a": {RawSQL: "1"},
+		"a": {Text: "1"},
 	}).Add("SELECT ${a}").ToSQL(); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +258,7 @@ func TestCov_AddVarOnErrorInstance(t *testing.T) {
 	if _, _, err := bad.Var("k", "v").ToSQL(); err == nil {
 		t.Fatal("err should propagate through Var")
 	}
-	if _, _, err := bad.Vars(map[string]dba.Node{"k": {RawSQL: "v"}}).ToSQL(); err == nil {
+	if _, _, err := bad.Vars(map[string]dba.Node{"k": {Text: "v"}}).ToSQL(); err == nil {
 		t.Fatal("err should propagate through Vars")
 	}
 }

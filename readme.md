@@ -8,22 +8,23 @@ handles the plumbing: parameters, quoting, fragments, execution.
 ## Quick start
 
 ```go
-q := dba.NewFromSqlx(db)
+db := dba.NewFromSqlx(pool) // base instance — never mutated
 
-// SQL is the template — macros add plumbing, never replace the language
-q.Add("SELECT * FROM users WHERE status = #{1} AND age >= #{2}",
-    "active", 18)
+// One template, three uses. Fragments carry their own parameters —
+// the call site never sees the args.
+base := db.Add("SELECT ${F:*} FROM users ${where:} ${order:ORDER BY id}") // defaults: * / empty / ORDER BY id
 
-// Conditional clauses
-q.AddIf(minAge > 0, "AND age >= #{1}", minAge)
+// list: active adults, newest first — fill two slots
+list := base.
+    Var("where", "WHERE status = #{1} AND age >= #{2}", "active", 18).
+    Var("order", "ORDER BY created_at DESC")
+// → SELECT * FROM users WHERE status = $1 AND age >= $2 ORDER BY created_at DESC
+var users []User
+err := list.List(&users)
 
-// Reusable fragments with parameters attached
-q.Var("where", " WHERE status = #{1}", "active")
-q.Add("SELECT * FROM users${where} ${order:ORDER BY id}")
-
-// Execute
-user := User{}
-found, err := q.Get(&user)
+// count: same filter, swap F to COUNT — base and list stay untouched
+total, found, err := dba.Scalar[int64](list.Var(dba.F, "COUNT(1)"))
+// → SELECT COUNT(1) FROM users WHERE status = $1 AND age >= $2 ORDER BY created_at DESC
 ```
 
 ## Why not just sqlx?
@@ -38,8 +39,8 @@ if name != "" {
 }
 query, args, _ = sqlx.In("SELECT * FROM users WHERE id IN (?)", ids)
 
-// dba — the SQL reads as SQL
-q.Add("SELECT * FROM users WHERE status = #{1}", "active").
+// dba — the SQL reads as SQL (chained: each call returns a new builder)
+built := db.Add("SELECT * FROM users WHERE status = #{1}", "active").
     AddIf(name != "", "AND name = #{1}", name).
     Add("AND id IN (#{1|expand})", ids)
 ```
@@ -49,9 +50,9 @@ q.Add("SELECT * FROM users WHERE status = #{1}", "active").
 | `IN (?)` expansion | `sqlx.In()` in a separate call | `#{1\|expand}` explicit expansion |
 | Conditional clauses | String concat + manual args | `AddIf(cond, ...)` |
 | Reusable fragments | Copy-paste SQL | `Var(key, fragment, args...)` |
-| Count + data pagination | Two maintained SQL strings | `Page[T](q, page, size)` |
+| Count + data pagination | Two maintained SQL strings | `Page[T](db, page, size)` |
 | Identifier quoting | Manual per dialect | `@{table}` / `#{1\|quote}` / quoter |
-| Tracing/logging | Wrap every call | `Use(LogHook(...))` — once |
+| Tracing/logging | Wrap every call | `SetLogger(NewLogger(...))` — once |
 
 ## Core ideas
 
@@ -61,12 +62,11 @@ is a complete language — any DSL that tries to cover it either surrenders to
 surface). dba doesn't abstract SQL; it adds plumbing *around* it. The template
 **is** the final SQL — `ToSQL()` shows exactly what runs.
 
-**Three mechanisms, each with one job:**
+**Two mechanisms, each with one job:**
 
 | Mechanism | Layer | Job |
 |---|---|---|
-| `#{...}` `!{...}` `@{...}` | rendering | values, identifiers, raw text |
-| `\|pipe` | rendering | value rendering control (the only semantic layer) |
+| `#{...}` | rendering | values — the default pipe is `bind`; `\|pipe` overrides rendering (`!`/`@` are shortcuts for two pipes) |
 | `${...}` | structure | template fragments (reuse, override, defer decisions) |
 
 ## Syntax reference
@@ -76,12 +76,14 @@ surface). dba doesn't abstract SQL; it adds plumbing *around* it. The template
 | Syntax | What it does | Example |
 |---|---|---|
 | `#{1}` | Positional parameter, single value | `WHERE id = #{1}` → `WHERE id = $1` |
-| `#{name}` | Named parameter from map/struct | `#{id}` + `map["id"]` |
+| `#{name}` | Named parameter — non-numeric content resolves from the last arg (map/struct, sqlx convention); map/struct field values may themselves be Node (inlined) | `#{id}` + `map["id"]` |
 | `#{1\|pipe}` | Pipe override — custom rendering | `IN (#{1\|expand})` → `$1, $2, $3` |
-| `!{1}` | Raw injection of parameter 1 (caller is responsible for safety) | `to !{1}` → `to /tmp/out.csv` |
-| `@{users}` | **Literal** identifier — content is the identifier name, quoted safely | `SELECT @{users}.name` → `` SELECT `users`.name `` |
 | `${key:default}` | Fillable fragment with fallback | `${order:ORDER BY id}` |
 | `XX{...}` | Double prefix escapes to a literal `X{` | `##{1}` → literal `#{1}` |
+
+Shortcuts — `!` and `@` are convenience prefixes for two pipes:
+`!{1}` ≡ `#{1\|raw}` (raw value injection, caller responsible for safety);
+`@{users}` ≡ the `literalquote` pipe (content *is* the identifier name, quoted safely).
 
 Macros are only recognized when the prefix **immediately** precedes `{`
 (`#{1}` yes, `# {1}` no) — so MySQL `# comments`, PG `$1`, `@x` variables,
@@ -107,24 +109,21 @@ content can carry its own pipe: `#{1|quote}`, `@{x|raw}`.
 ### Variables — the structure layer
 
 ```go
-// Fillable slots with inline defaults. Spacing conventions:
-//   • a variable sits flush against the preceding text
-//   • spacing between variables is written before the later one
-//   • Var content conventionally starts with a space
-//   • inline default text is trimmed — keep spacing in the template
-q.Add("SELECT ${F:*} FROM users${where:} ${order:ORDER BY id}")
-// → SELECT * FROM users ORDER BY id          (defaults apply)
-// → SELECT id, name FROM users WHERE status = $1 ORDER BY id DESC
+// Fillable slots with inline defaults. Write naturally — spaces live in the
+// template, Var content and inline defaults need no leading space.
+// An empty fragment leaves the template's spacing (double space) — harmless.
+noFilter := db.Add("SELECT ${F:*} FROM users ${where:} ${order:ORDER BY id}")
+// → SELECT * FROM users  ORDER BY id          (defaults apply — empty where leaves a gap)
+// → SELECT id, name FROM users WHERE status = $1 AND age >= $2 ORDER BY id DESC
 //   (after Var("where", ...) + Var(F, "id, name") + Var("order", ...))
 
 // Parameters are attached to the fragment, not the call site
-q.Var("where", " WHERE status = #{1} AND age >= #{2}", "active", 18)
-q.Add("SELECT * FROM users${where}")   // caller doesn't know the args
+filtered = noFilter.Var("where", "WHERE status = #{1} AND age >= #{2}", "active", 18)
 
 // Immutable — each Var returns a new copy; the base is untouched
-base  := q.Add("SELECT ${F:*} FROM users${where:} ${order:ORDER BY id}")
-count := base.Var(dba.F, "COUNT(1)")          // independent query
-data  := base.Var("where", " WHERE id > #{1}", 100)
+base  := db.Add("SELECT ${F:*} FROM users ${where:} ${order:ORDER BY id}")
+count := base.Var(dba.F, "COUNT(1)")          // independent query, dba.F is just 'F'
+data  := base.Var("where", "WHERE id > #{1}", 100)
 ```
 
 Variables are the *structure* layer: their content is a template (macros
@@ -135,19 +134,25 @@ back into the structure layer.
 ## Building
 
 ```go
-q.Add("SELECT * FROM users WHERE id = #{1}", 42)           // positional
-q.Add("SELECT * FROM users WHERE id = #{id}", map{"id": 42}) // named (map/struct)
-q.AddIf(name != "", "AND name = #{1}", name)               // conditional
-q.Var("where", "WHERE x = #{1}", 1)                        // fragment
-q.Batch(rows)                                              // parenthesized value groups
+// Every method returns a NEW builder — db is never mutated; reassign or chain.
+db.Add("SELECT * FROM users WHERE id = #{1}", 42)           // positional
+db.Add("SELECT * FROM users WHERE id = #{id}", map{"id": 42}) // named (map/struct)
+db.AddIf(name != "", "AND name = #{1}", name)               // conditional
+db.Var("where", "WHERE x = #{1}", 1)                        // fragment
+db.Batch(rows)                                              // parenthesized value groups
 ```
 
-`Unsafe()` disables macro parsing for raw dialect SQL you don't want touched.
+`Unsafe()` switches to sqlx's unsafe mode (struct field-to-column mapping
+mismatches are ignored instead of erroring) — for ad-hoc scans against
+loosely-shaped rows. Macro parsing is unaffected.
 
 ## DML helpers
 
 Columns are sorted lexicographically for stable SQL; `omitempty` drops zero
-values (including `sql.Null*` with `Valid=false`).
+values (including `sql.Null*` with `Valid=false`). Pointer fields follow the
+encoding/json convention: `nil` is skipped, `&0` is kept — the escape hatch
+for writing a zero value through an omitempty column. A `sql.Null*` tagged
+omitempty cannot express an explicit NULL (write via map instead).
 
 ```go
 type User struct {
@@ -156,31 +161,49 @@ type User struct {
     CreatedAt string `db:"created_at,omitempty"`
 }
 
-q.Insert("users", User{Name: "alice"})
+// Every method returns a NEW builder — db is never mutated.
+db.Insert("users", User{Name: "alice"})
 // INSERT INTO "users" ("name") VALUES ($1)     — ID and CreatedAt omitted
 
-q.Update("users", map[string]any{"name": "bob"}, "id = #{1}", 42)
+db.Update("users", dba.H{"name": "bob"}, "id = #{1}", 42)
 // UPDATE "users" SET "name"=$1 WHERE id = $2
 
-q.Delete("users", "id = #{1}", 42)
+db.Delete("users", "id = #{1}", 42)
 
-q.BatchInsert("users", anySlice(users))        // one statement, N rows
+db.BatchInsert("users", anySlice(users))        // one statement, N rows
 // INSERT INTO "users" ("name") VALUES ($1), ($2), ($3)
 
-q.Update("stats", map[string]any{
+db.Update("stats", dba.H{
     "views": dba.Expr("views + 1"),            // raw SQL expressions in values
     "score": dba.Expr("score + #{1}", 10),
 }, "id = #{1}", 1)
 ```
 
+## Two ways to carry SQL fragments
+
+`${var}` and Node parameters both inline SQL text, but serve different jobs:
+
+```
+${var}    — the template's configurable slot: named, late-bound, overridable
+            (${F:*}, ${order:ORDER BY id}) — structure layer
+Node arg  — SQL text travelling as data: positional, immediate, travels
+            with the value (a column value of NOW(), an IN subquery)
+```
+
+Both render through the same recursion (depth-limited, cycle-safe). The
+generators already follow this split: `Insert`/`Update` accept Node values,
+`Select`/`Page` use `${F:*}` slots.
+
 ## Executing
 
 ```go
-found, err := q.Get(&user)             // single row; (false, nil) when not found
-err := q.List(&users)                  // slice pointer; also *[]map[string]any
-res, err := q.Exec()                   // INSERT/UPDATE/DELETE
-rows, err := q.Rows()                  // streaming large result sets
-sql, args, err := q.ToSQL()            // inspect without executing
+found, err := db.Get(&user)             // single row; (false, nil) when not found
+err := db.List(&users)                  // slice pointer (sqlx mapping)
+ms, err := db.ListMap()                 // rows as []map[string]any — unknown columns
+m, found, err := db.GetMap()            // single row as map[string]any
+res, err := db.Exec()                   // INSERT/UPDATE/DELETE
+rows, err := db.Rows()                  // streaming large result sets
+sql, args, err := db.ToSQL()            // inspect without executing
 ```
 
 ## Dialects
@@ -190,10 +213,10 @@ differences (`LIMIT ? OFFSET ?`, JSON operators, casts) live in your template,
 as SQL should. Quoting and placeholders are pluggable:
 
 ```go
-q := dba.NewFromSqlx(db).
+db := dba.NewFromSqlx(pool).
     Quoter(dba.MySQLQuoter)   // `name`  — default is MySQL-style
     // Quoter(dba.AnsiQuoter) // "name"  — PG/SQLite/SQL Server
-    // Formater(dba.DollarFormat) // $1, $2 — PG
+    // Formatter(dba.DollarFormat) // $1, $2 — PG
 ```
 
 No dialect matrix, no database-version coupling — a new database costs two
@@ -212,7 +235,7 @@ func (u *User) BeforeCreate() error {   // hooks for timestamps, defaults
     return nil
 }
 
-dao := dba.NewDao[User](q, "users")
+dao := dba.NewDao[User](db, "users")
 
 id, _ := dao.Create(User{Name: "alice"})      // hook runs; returns new ID
 user, _ := dao.GetByID(id)                     // *User, nil when not found
@@ -223,16 +246,16 @@ deleted, _ := dao.Delete("id = #{1}", id)
 
 // Join with the table's own quoting, via alias variables:
 m := dao.Vars("u")   // {"u.as": "`users` AS `u`", "u": "`u`", "u.pk": "`u`.`id`"}
-q = q.Vars(m)         // register the fragment map
-q.Add("SELECT ${u.pk} FROM ${u.as} JOIN orders o ON o.user_id = ${u.pk}")
+joined := db.Vars(m).   // register the fragment map
+    Add("SELECT ${u.pk} FROM ${u.as} JOIN orders o ON o.user_id = ${u.pk}")
 
 // Cross-DAO transactions
-q.Transaction(func(tx *dba.SQL) error {
-    uid, err := userDao.WithTx(tx).Create(User{Name: "alice"})
+db.Transaction(func(tx *dba.SQL) error {
+    uid, err := userDao.WithTx(tx).Create(&User{Name: "alice"})
     if err != nil {
         return err
     }
-    _, err = orderDao.WithTx(tx).Create(Order{UserID: int(uid)})
+    _, err = orderDao.WithTx(tx).Create(&Order{UserID: int(uid)})
     return err // nil → commit, error → rollback
 })
 ```
@@ -243,52 +266,51 @@ q.Transaction(func(tx *dba.SQL) error {
 template:
 
 ```go
-q := db.RegisterPipe("upper", func(ctx dba.RenderCtx, content string) error {
+db := pool.RegisterPipe("upper", func(ctx dba.RenderCtx, content string) error {
     v, err := ctx.Resolve(content)              // parameter, or literal?
     if err != nil {
         return err
     }
-    ctx.AddParam(strings.ToUpper(fmt.Sprint(v)))
-    return nil
+    return ctx.Bind(strings.ToUpper(fmt.Sprint(v)))  // Bind: Node 内联, 普通值占位符
 })
-q.Add("WHERE name = #{1|upper}", "bob")
+upper := db.Add("WHERE name = #{1|upper}", "bob")
 
 // Macros are syntax aliases for pipes — local dialect, shared semantics
-q = q.RegisterMacro('^', "upper")
-q.Add("WHERE name = ^{1}", "bob")               // same as #{1|upper}
+alias := db.RegisterMacro('^', "upper").
+    Add("WHERE name = ^{1}", "bob")             // same as #{1|upper}
 ```
 
 The pipe receives the macro content **literally** and decides itself whether to
 treat it as a parameter key (`ctx.Resolve`) or use it directly — so custom
-pipes are free to do either. Dialect-specific needs (e.g. DuckDB's
+pipes are free to do either. Bind any resolved value through `ctx.Bind` —
+it is the single place where Node parameters are inlined (and the only way
+a custom pipe stays safe). Dialect-specific needs (e.g. DuckDB's
 `COPY ... TO` not accepting bound output paths) are solved with a 10-line
 custom pipe at the project level — never by growing the library.
 
 Both registrations are instance-scoped and copy-on-write — no global state, no
 concurrency issues. `$` is the reserved structure-layer prefix.
 
-## Middleware
+## Observing executions
 
-Onion model — every query passes through the chain:
+A single callback is invoked after every execution — pass `begin` so the
+observer computes duration or opens tracing spans itself:
 
 ```go
-q = q.Use(dba.LogHook(slog.Default(), 200*time.Millisecond, true))
-// or
-q = q.Use(func(next dba.ExecFunc) dba.ExecFunc {
-    return func(ctx context.Context, query string, args []any) (any, error) {
-        start := time.Now()
-        result, err := next(ctx, query, args)
-        log.Printf("[%s] %s", time.Since(start), query)
-        return result, err
-    }
+logged := db.SetLogger(dba.NewLogger(slog.Default(), 200*time.Millisecond, true))
+// or a custom observer:
+custom := db.SetLogger(func(ctx context.Context, begin time.Time, query string, args []any, err error) {
+    log.Printf("[%s] %s", time.Since(begin), query)
 })
 ```
+
+`SetLogger(nil)` silences. Observers never alter the execution flow.
 
 ## Utilities
 
 ```go
-count, found, _ := dba.Scalar[int64](q.Add("SELECT COUNT(1) FROM users"))
-items, total, _ := dba.Page[User](q, page, size)   // skips data query when total==0
+count, found, _ := dba.Scalar[int64](db.Add("SELECT COUNT(1) FROM users"))
+items, total, _ := dba.Page[User](db, page, size)   // skips data query when total==0
 ok := dba.IsOk(v)                    // non-nil, non-empty string/slice/map
 dba.Map / dba.IndexBy / dba.GroupBy  // generic slice helpers
 ```
@@ -305,10 +327,10 @@ dba.Map / dba.IndexBy / dba.GroupBy  // generic slice helpers
 - **Structure and rendering are separate layers.** `${}` fragments render
   recursively and may contain macros; pipes can never reach back into
   fragments (one-way dependency — no cycles, no cross-layer coupling).
-- **Dialect cost is two functions.** Quoter + Formater, and nothing else
+- **Dialect cost is two functions.** Quoter + Formatter, and nothing else
   parses or rewrites SQL. New databases, old versions — both are free.
 - **Mechanisms over features.** Everything is a small, composable mechanism
-  (macro, pipe, variable, hook, quoter). Features are assembled from
+  (macro, pipe, variable, quoter, logger callback). Features are assembled from
   mechanisms at the call site, not added to the library.
 
 ## Tests

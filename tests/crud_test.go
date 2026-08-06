@@ -320,7 +320,9 @@ func TestInsert_NullablePointer_NilOmits(t *testing.T) {
 	}
 }
 
-func TestInsert_NullablePointer_ValidFalseOmits(t *testing.T) {
+// 非 nil 指针 = 显式意图 (encoding/json 约定): 即使指向 Valid:false 的
+// NullString 也保留 — 这是 omitempty 字段显式写 NULL 的逃生舱。
+func TestInsert_NullablePointer_ValidFalseKeeps(t *testing.T) {
 	type ptrUser struct {
 		Name *gosql.NullString `db:"name,omitempty"`
 		Age  int               `db:"age"`
@@ -331,12 +333,18 @@ func TestInsert_NullablePointer_ValidFalseOmits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `INSERT  INTO "users" ("age") VALUES ($1)`
+	want := `INSERT  INTO "users" ("name", "age") VALUES ($1, $2)`
 	if sql != want {
 		t.Errorf("got  %q\nwant %q", sql, want)
 	}
-	if len(args) != 1 || args[0] != 30 {
+	if len(args) != 2 {
 		t.Errorf("args: %v", args)
+	}
+	if pns, ok := args[0].(*gosql.NullString); !ok || pns.Valid {
+		t.Errorf("args[0] should be *NullString{Valid:false}: %#v", args[0])
+	}
+	if args[1] != 30 {
+		t.Errorf("args[1]: %v", args[1])
 	}
 }
 
@@ -359,7 +367,7 @@ func TestInsert_NullablePointer_ValidTrueKeeps(t *testing.T) {
 	if len(args) != 2 || args[1] != 30 {
 		t.Errorf("args: %v", args)
 	}
-	if ptr, ok := args[0].(*gosql.NullString); !ok || *ptr != (gosql.NullString{String: "carol", Valid: true}) {
+	if pns, ok := args[0].(*gosql.NullString); !ok || *pns != (gosql.NullString{String: "carol", Valid: true}) {
 		t.Errorf("args[0]: %v", args[0])
 	}
 }

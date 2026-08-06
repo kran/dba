@@ -666,7 +666,7 @@ func TestBuild_CustomPipe(t *testing.T) {
 			return err
 		}
 		ctx.WriteString("UPPER(")
-		ctx.AddParam(v)
+		ctx.Bind(v)
 		ctx.WriteString(")")
 		return nil
 	})

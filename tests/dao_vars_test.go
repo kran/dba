@@ -11,7 +11,7 @@ func TestDaoVars(t *testing.T) {
 		ID   int    `db:"id"`
 		Name string `db:"name"`
 	}
-	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formater(dba.QmarkFormat)
+	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formatter(dba.QmarkFormat)
 	dao := dba.NewDao[user](q, "users")
 
 	m := dao.Vars("u")
@@ -43,7 +43,7 @@ func TestDaoVars_NoAlias(t *testing.T) {
 	type user struct {
 		ID int `db:"id"`
 	}
-	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formater(dba.QmarkFormat)
+	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formatter(dba.QmarkFormat)
 	dao := dba.NewDao[user](q, "users")
 	// 无 alias: Vars 返回 nil, 表名裸写
 	if m := dao.Vars(""); m != nil {
@@ -55,7 +55,7 @@ func TestDaoVars_CustomPK(t *testing.T) {
 	type customer struct {
 		ID int `db:"id"`
 	}
-	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formater(dba.QmarkFormat)
+	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formatter(dba.QmarkFormat)
 	dao := dba.NewDao[customer](q, "customers").PK("customer_id")
 	m := dao.Vars("c")
 	sql, _, err := q.Vars(m).Add("SELECT ${c.pk} FROM ${c.as}").ToSQL()
@@ -75,7 +75,7 @@ func TestDaoVarsJoin(t *testing.T) {
 	type profile struct {
 		UserID int `db:"user_id"`
 	}
-	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formater(dba.QmarkFormat)
+	q := dba.NewFromSqlx(newDB(t)).Quoter(dba.MySQLQuoter).Formatter(dba.QmarkFormat)
 	q = q.Vars(dba.NewDao[user](q, "users").Vars("u"))
 	q = q.Vars(dba.NewDao[profile](q, "user_profiles").Vars("p"))
 

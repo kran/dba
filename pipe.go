@@ -1,6 +1,7 @@
 package dba
 
 import (
+	"errors"
 	"fmt"
 	"github.com/jmoiron/sqlx/reflectx"
 	"maps"
@@ -11,8 +12,11 @@ import (
 
 // RenderCtx 渲染上下文: 管道与宏的渲染出口。
 type RenderCtx interface {
-	// AddParam 写入一个占位符并收集绑定参数 (内部维护序号与方言格式)。
-	AddParam(v any)
+	// Bind 绑定一个值: Node 内联渲染 (参数即子树), 其他值写占位符并收集参数。
+	// "参数即子树"不变式的唯一实现点 —— 管道一律经 Bind 处理参数值。
+	Bind(v any) error
+	// Render 内联渲染一个 Node 子片段 (递归, 用该 Node 自己的 Args)。
+	Render(n Node) error
 	// WriteString 写入原始 SQL 文本。
 	WriteString(s string)
 	// QuoteIdent 写入方言 quoting 的标识符。
@@ -26,7 +30,7 @@ type RenderCtx interface {
 // 管道收到宏内容的字面量 (如 #{1|pipe} 的 "1"、@{users} 的 "users"),
 // 由管道自行决定: 字面量直接用 (ident), 或经 ctx.Resolve 取参数 (bind/raw/expand)。
 // 用户管道可自由选择 — 这是管道的灵活性所在。
-// 内置: bind/expand/raw/ident; 用户通过 RegisterPipe 注册。
+// 内置: bind/expand/raw/quote/literalquote; 用户通过 RegisterPipe 注册。
 type Pipe func(ctx RenderCtx, content string) error
 
 // ── 内置管道 ─────────────────────────────────────────────
@@ -36,8 +40,7 @@ func pipeBind(ctx RenderCtx, content string) error {
 	if err != nil {
 		return err
 	}
-	ctx.AddParam(v)
-	return nil
+	return ctx.Bind(v)
 }
 
 // pipeExpand 展开 slice/array 为独立占位符:
@@ -59,7 +62,9 @@ func pipeExpand(ctx RenderCtx, content string) error {
 		if i > 0 {
 			ctx.WriteString(", ")
 		}
-		ctx.AddParam(rv.Index(i).Interface())
+		if err := ctx.Bind(rv.Index(i).Interface()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -67,6 +72,8 @@ func pipeExpand(ctx RenderCtx, content string) error {
 // pipeRaw 原始文本注入 (调用者负责安全):
 //
 //	q.Add("WHERE created_at > #{1|raw}", "NOW()")
+//
+// Node 参数内联渲染 (它是 SQL 文本 + 参数); 普通值原样写文本。
 func pipeRaw(ctx RenderCtx, content string) error {
 	v, err := ctx.Resolve(content)
 	if err != nil {
@@ -74,6 +81,9 @@ func pipeRaw(ctx RenderCtx, content string) error {
 	}
 	if v == nil {
 		return fmt.Errorf("dba: raw pipe requires non-nil value")
+	}
+	if n, ok := v.(Node); ok {
+		return ctx.Render(n)
 	}
 	ctx.WriteString(fmt.Sprintf("%v", v))
 	return nil
@@ -124,9 +134,12 @@ var defaultMacros = map[byte]string{
 
 // RegisterPipe 注册自定义管道, 返回新 builder:
 //
-//	q := db.RegisterPipe("upper", func(ctx RenderCtx, v any) error {
-//		ctx.AddParam(strings.ToUpper(fmt.Sprint(v)))
-//		return nil
+//	q := db.RegisterPipe("upper", func(ctx RenderCtx, content string) error {
+//		v, err := ctx.Resolve(content)
+//		if err != nil {
+//			return err
+//		}
+//		return ctx.Bind(strings.ToUpper(fmt.Sprint(v))) // Bind: Node 内联, 普通值占位符
 //	})
 //	q.Add("WHERE name = #{1|upper}", "bob") → $1 = "BOB"
 func (d *SQL) RegisterPipe(name string, fn Pipe) *SQL {
@@ -162,26 +175,50 @@ func (d *SQL) RegisterMacro(prefix byte, pipe string) *SQL {
 
 // buildRenderCtx build 侧 RenderCtx 实现。
 type buildRenderCtx struct {
-	sqlBuilder *strings.Builder
-	argCount   *int
-	formater   Formater
-	finalArgs  *[]any
-	quoter     Quoter
-	args       []any // 当前渲染参数列表 (render 入口更新, 递归时变化)
+	d     *SQL            // 回指: Render 需要 macros/pipes/varNodes
+	sb    strings.Builder // 输出
+	out   []any           // finalArgs 绑定参数
+	n     int             // argCount 占位符序号
+	args  []any           // 当前渲染参数列表 (renderText 入口更新, 递归时变化)
+	depth int             // 递归深度 (防循环/栈溢出)
 }
 
-func (w *buildRenderCtx) AddParam(v any) {
-	*w.argCount++
-	w.sqlBuilder.WriteString(w.formater(*w.argCount))
-	*w.finalArgs = append(*w.finalArgs, v)
+// Bind 实现 RenderCtx: Node 内联, 其他值写占位符。
+func (w *buildRenderCtx) Bind(v any) error {
+	switch n := v.(type) {
+	case Node:
+		return w.Render(n)
+	case *Node: // 宽容: 从结构体字段取出的指针
+		if n == nil {
+			w.addParam(nil) // nil 指针 = SQL NULL 的自然语义
+			return nil
+		}
+		return w.Render(*n)
+	}
+	w.addParam(v)
+	return nil
+}
+
+// Render 实现 RenderCtx: 内联渲染 Node 子树。
+func (w *buildRenderCtx) Render(n Node) error {
+	if n.Text == "" && len(n.Args) == 0 {
+		return errors.New("dba: empty Node fragment")
+	}
+	return w.d.renderText(w, n.Text, n.Args)
+}
+
+func (w *buildRenderCtx) addParam(v any) {
+	w.n++
+	w.sb.WriteString(w.d.formatter(w.n))
+	w.out = append(w.out, v)
 }
 
 func (w *buildRenderCtx) WriteString(s string) {
-	w.sqlBuilder.WriteString(s)
+	w.sb.WriteString(s)
 }
 
 func (w *buildRenderCtx) QuoteIdent(s string) {
-	w.sqlBuilder.WriteString(w.quoter(s))
+	w.sb.WriteString(w.d.quoter(s))
 }
 
 func (w *buildRenderCtx) Resolve(key string) (any, error) {

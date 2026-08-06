@@ -14,23 +14,35 @@ import (
 )
 
 // F is the default field variable name used by Select and Page.
-const (
-	F = "F"
-	I = "I"
-)
+// F 是 Select/Page 的列集槽位变量名。
+//
+// 契约:
+//   - Select 生成 "${F:*}" (默认 *), Page 用 Var(F, "COUNT(1)") 换计数。
+//   - 手写 SQL 接入 Page: 主链必须含 ${F:...} 或裸 ${F} (见 Page 的探测)。
+//   - 约定 F 槽在主链 (mainNodes); 藏在 varNode 里的 ${F} 不被 Page 识别。
+const F = "F"
+
+// I 是 INSERT 修饰词槽位 (INSERT ${I:} INTO ...), 默认为空。
+// 存在理由: Insert 生成后, 链式 Add 只能追加尾部 (ON DUPLICATE KEY /
+// RETURNING / ON CONFLICT 天然可达), 唯独 INSERT 与 INTO 之间是死角,
+// 此槽是唯一通气孔:
+//
+//	db.Var(I, "IGNORE").Insert("users", u)  // INSERT IGNORE INTO ...
+const I = "I"
+
+// O 是排序槽位变量名。Page 的 count 查询会 Var(O, "") 清空它,
+// 因此接入 Page 的查询应把 ORDER BY 写成 ${O:...} 而非裸文本:
+//
+//	q.Add("SELECT ... WHERE x ${O:ORDER BY id DESC}")
+const O = "order"
 
 // H is a shorthand for map[string]any.
 type H = map[string]any
 
-// SQLExpr wraps a raw SQL expression for Insert/Update values.
-type SQLExpr struct {
-	Sql  string
-	Args []any
-}
-
-// Expr creates a SQLExpr with optional bind arguments.
-func Expr(sql string, args ...any) SQLExpr {
-	return SQLExpr{Sql: sql, Args: args}
+// Expr creates a Node fragment; passed as an argument it is inlined into
+// the SQL (参数即子树) instead of bound as a placeholder.
+func Expr(sql string, args ...any) Node {
+	return Node{Text: sql, Args: args}
 }
 
 // LogFunc SQL 执行日志回调: 每次执行后调用一次 (begin 为执行开始时间,
@@ -40,8 +52,8 @@ type LogFunc func(ctx context.Context, begin time.Time, query string, args []any
 // execFunc 实际执行函数 (内部): 调用底层 sqlx/database 完成查询。
 type execFunc func(ctx context.Context, query string, args []any) (any, error)
 
-// Formater generates a placeholder for the n-th parameter.
-type Formater func(idx int) string
+// Formatter generates a placeholder for the n-th parameter.
+type Formatter func(idx int) string
 
 // QmarkFormat returns "?" for every index.
 func QmarkFormat(_ int) string { return "?" }
@@ -59,8 +71,8 @@ func MySQLQuoter(s string) string { return "`" + strings.ReplaceAll(s, "`", "``"
 func AnsiQuoter(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 type Node struct {
-	RawSQL string
-	Args   []any
+	Text string
+	Args []any
 }
 
 // SQL is an immutable, chainable query builder backed by sqlx.
@@ -75,14 +87,13 @@ type SQL struct {
 	ctx        context.Context
 	err        error
 	quoter     Quoter
-	formater   Formater
+	formatter  Formatter
 	driverName string
 	logger     LogFunc // 执行日志回调 (nil = 静默)
-	copyId     int
 }
 
 // NewFromSqlx creates a SQL builder from a sqlx.DB. Auto-detects driver for
-// placeholder formater and identifier quoting.
+// placeholder formatter and identifier quoting.
 func NewFromSqlx(db *sqlx.DB) *SQL {
 	driver := db.DriverName()
 	quoter := AnsiQuoter
@@ -105,9 +116,8 @@ func NewFromSqlx(db *sqlx.DB) *SQL {
 		pool:       db,
 		ctx:        context.Background(),
 		quoter:     quoter,
-		formater:   format,
+		formatter:  format,
 		driverName: driver,
-		copyId:     0,
 	}
 }
 
@@ -133,15 +143,13 @@ func (d *SQL) Close() error {
 func (d *SQL) copy() *SQL {
 	clone := &SQL{
 		mainNodes:  make([]Node, len(d.mainNodes)),
-		varNodes:   make(map[string]Node),
 		executor:   d.executor,
 		pool:       d.pool,
 		ctx:        d.ctx,
 		err:        d.err,
 		quoter:     d.quoter,
-		formater:   d.formater,
+		formatter:  d.formatter,
 		driverName: d.driverName,
-		copyId:     d.copyId + 1,
 	}
 	copy(clone.mainNodes, d.mainNodes)
 	// 低频写字段: 共享只读, 写操作 (Var/Vars/Use/Register*) 各自 copy-on-write
@@ -166,10 +174,10 @@ func (d *SQL) Quoter(quoter Quoter) *SQL {
 	return clone
 }
 
-// Formater returns a new builder with the given placeholder formater.
-func (d *SQL) Formater(formatter Formater) *SQL {
+// Formatter returns a new builder with the given placeholder formatter.
+func (d *SQL) Formatter(formatter Formatter) *SQL {
 	clone := d.copy()
-	clone.formater = formatter
+	clone.formatter = formatter
 	return clone
 }
 
@@ -214,7 +222,7 @@ func (d *SQL) Add(query string, args ...any) *SQL {
 	if clone.err != nil {
 		return clone
 	}
-	clone.mainNodes = append(clone.mainNodes, Node{RawSQL: query, Args: args})
+	clone.mainNodes = append(clone.mainNodes, Node{Text: query, Args: args})
 	return clone
 }
 
@@ -233,7 +241,7 @@ func (d *SQL) Var(key string, query string, args ...any) *SQL {
 		return clone
 	}
 	clone.varNodes = maps.Clone(clone.varNodes) // copy-on-write
-	clone.varNodes[key] = Node{RawSQL: query, Args: args}
+	clone.varNodes[key] = Node{Text: query, Args: args}
 	return clone
 }
 
@@ -264,7 +272,6 @@ func (d *SQL) Batch(rows [][]any) *SQL {
 		return clone
 	}
 
-	result := d
 	var builder strings.Builder
 	builder.Grow(len(rows) * width * 8)
 	var bindArgs []any
@@ -286,21 +293,15 @@ func (d *SQL) Batch(rows [][]any) *SQL {
 			if j > 0 {
 				builder.WriteString(", ")
 			}
-
-			if expr, ok := val.(SQLExpr); ok {
-				varName := fmt.Sprintf("__dba_batch_%d_%d_%d", d.copyId, i, j)
-				result = result.Var(varName, expr.Sql, expr.Args...)
-				builder.WriteString("${" + varName + "}")
-			} else {
-				builder.WriteString(fmt.Sprintf("#{%d}", argIdx))
-				bindArgs = append(bindArgs, val)
-				argIdx++
-			}
+			// Node 值也作为普通参数: bind 管道内联 (参数即子树)
+			builder.WriteString(fmt.Sprintf("#{%d}", argIdx))
+			bindArgs = append(bindArgs, val)
+			argIdx++
 		}
 		builder.WriteString(")")
 	}
 
-	return result.Add(builder.String(), bindArgs...)
+	return d.Add(builder.String(), bindArgs...)
 }
 
 // BatchInsert builds a complete INSERT from a slice of entities.
@@ -359,53 +360,36 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 	return d.Add(insertHead).Batch(rows)
 }
 
-// List scans multiple rows into a slice pointer.
+// List scans multiple rows into a slice pointer (struct/basic types, sqlx mapping).
+// For dynamic queries with unknown columns use ListMap.
 func (d *SQL) List(dest interface{}) error {
-	if mapSlice, ok := dest.(*[]map[string]any); ok {
-		rows, err := d.Rows()
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			m := make(map[string]any)
-			if err := rows.MapScan(m); err != nil {
-				return err
-			}
-			*mapSlice = append(*mapSlice, m)
-		}
-		return rows.Err()
-	}
 	_, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return nil, sqlx.SelectContext(ctx, d.executor, dest, query, args...)
 	})
 	return err
 }
 
+// ListMap scans multiple rows into a slice of maps — for queries whose
+// columns are not known at compile time.
+func (d *SQL) ListMap() ([]map[string]any, error) {
+	rows, err := d.Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ms []map[string]any
+	for rows.Next() {
+		m := make(map[string]any)
+		if err := rows.MapScan(m); err != nil {
+			return nil, err
+		}
+		ms = append(ms, m)
+	}
+	return ms, rows.Err()
+}
+
 // Get scans a single row. Returns (false, nil) when no row is found.
 func (d *SQL) Get(dest any) (found bool, err error) {
-	if m, ok := dest.(*map[string]any); ok {
-		rows, err := d.Rows()
-		if err != nil {
-			return false, err
-		}
-		defer rows.Close()
-
-		if !rows.Next() {
-			if err := rows.Err(); err != nil {
-				return false, err
-			}
-			return false, nil
-		}
-
-		*m = make(map[string]any)
-
-		if err := rows.MapScan(*m); err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-
 	_, err = d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return nil, sqlx.GetContext(ctx, d.executor, dest, query, args...)
 	})
@@ -417,6 +401,28 @@ func (d *SQL) Get(dest any) (found bool, err error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// GetMap scans a single row into a map — for queries whose columns are not
+// known at compile time. found=false (nil map) when no row matches.
+func (d *SQL) GetMap() (map[string]any, bool, error) {
+	rows, err := d.Rows()
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	m := make(map[string]any)
+	if err := rows.MapScan(m); err != nil {
+		return nil, false, err
+	}
+	return m, true, nil
 }
 
 // Exec builds and executes a non-query statement.
@@ -466,27 +472,18 @@ func (d *SQL) Insert(table string, data any) *SQL {
 	}
 	quotedCols := make([]string, len(cols))
 	placeholders := make([]string, len(cols))
-	var bindArgs []any
-	prefix := d.copyId
-	result := d
 
 	for i, c := range cols {
 		quotedCols[i] = d.quoter(c)
-		if expr, ok := vals[i].(SQLExpr); ok {
-			varName := fmt.Sprintf("__expr_%d_%d", prefix, i)
-			placeholders[i] = "${" + varName + "}"
-			result = result.Var(varName, expr.Sql, expr.Args...)
-		} else {
-			bindArgs = append(bindArgs, vals[i])
-			placeholders[i] = fmt.Sprintf("#{%d}", len(bindArgs))
-		}
+		// Node 值也作为普通参数: bind 管道内联 (参数即子树)
+		placeholders[i] = fmt.Sprintf("#{%d}", i+1)
 	}
 	query := fmt.Sprintf("INSERT ${"+I+":} INTO %s (%s) VALUES (%s)",
 		d.quoter(table),
 		strings.Join(quotedCols, ", "),
 		strings.Join(placeholders, ", "),
 	)
-	return result.Add(query, bindArgs...)
+	return d.Add(query, vals...)
 }
 
 // Update generates and appends an UPDATE ... SET statement.
@@ -498,25 +495,15 @@ func (d *SQL) Update(table string, data any, where string, args ...any) *SQL {
 		return clone
 	}
 	setClauses := make([]string, len(cols))
-	var bindArgs []any
-	prefix := d.copyId
-	result := d
-
 	for i, c := range cols {
-		if expr, ok := vals[i].(SQLExpr); ok {
-			varName := fmt.Sprintf("__expr_%d_%d", prefix, i)
-			setClauses[i] = d.quoter(c) + "=${" + varName + "}"
-			result = result.Var(varName, expr.Sql, expr.Args...)
-		} else {
-			bindArgs = append(bindArgs, vals[i])
-			setClauses[i] = d.quoter(c) + "=" + fmt.Sprintf("#{%d}", len(bindArgs))
-		}
+		// Node 值也作为普通参数: bind 管道内联 (参数即子树)
+		setClauses[i] = d.quoter(c) + "=" + fmt.Sprintf("#{%d}", i+1)
 	}
 	setQuery := fmt.Sprintf("UPDATE %s SET %s WHERE",
 		d.quoter(table),
 		strings.Join(setClauses, ", "),
 	)
-	return result.Add(setQuery, bindArgs...).Add(where, args...)
+	return d.Add(setQuery, vals...).Add(where, args...)
 }
 
 // Delete generates and appends a DELETE FROM statement.
@@ -586,76 +573,75 @@ func (d *SQL) Transaction(fn func(*SQL) error) error {
 	return tx.Commit()
 }
 
+// maxRenderDepth 渲染递归深度上限: 防 ${a} 自引用 / Node 嵌套循环导致的栈溢出。
+const maxRenderDepth = 64
+
 func (d *SQL) build() (string, []any, error) {
 	if d.err != nil {
 		return "", nil, d.err
 	}
 
-	var sqlBuilder strings.Builder
-	var finalArgs []any
-	argCount := 0
-
-	sqlBuilder.Grow(512)
-
-	// 渲染: token 列表 → SQL 文本 + 参数 (扫描已由 lex 完成)
-	bw := &buildRenderCtx{sqlBuilder: &sqlBuilder, argCount: &argCount, formater: d.formater, finalArgs: &finalArgs, quoter: d.quoter}
-	var render func(items []item, args []any) error
-	render = func(items []item, args []any) error {
-		prev := bw.args
-		bw.args = args                    // 当前参数列表 (var 递归时 = varNode.Args)
-		defer func() { bw.args = prev }() // 递归返回后恢复, 外层宏继续用外层参数
-		for _, it := range items {
-			switch it.kind {
-			case itemText:
-				sqlBuilder.WriteString(it.val)
-
-			case itemMacro:
-				if err := d.renderMacro(bw, render, it, args); err != nil {
-					return err
-				}
-			default:
-				// itemError 已被 lex 过滤, 此处兜底未来扩展的 token 类型
-				return fmt.Errorf("dba: unexpected token kind %d", it.kind)
-			}
-		}
-		return nil
-	}
+	w := &buildRenderCtx{d: d}
+	w.sb.Grow(512)
 
 	for i, node := range d.mainNodes {
 		if i > 0 {
-			sqlBuilder.WriteString("\n")
+			w.sb.WriteString("\n")
 		}
-		items, err := lex(node.RawSQL, d.macros)
-		if err != nil {
-			return "", nil, err
-		}
-		if err := render(items, node.Args); err != nil {
+		if err := d.renderText(w, node.Text, node.Args); err != nil {
 			return "", nil, err
 		}
 	}
 
-	return sqlBuilder.String(), finalArgs, nil
+	return w.sb.String(), w.out, nil
+}
+
+// renderText 渲染一段模板文本 (宏展开 + 参数收集)。
+// 递归入口 ($ 变量/Node 内联) 共用: 深度护栏 + 参数作用域隔离。
+func (d *SQL) renderText(w *buildRenderCtx, text string, args []any) error {
+	w.depth++
+	defer func() { w.depth-- }()
+	if w.depth > maxRenderDepth {
+		return errors.New("dba: render depth exceeded (possible cycle)")
+	}
+
+	items, err := lex(text, d.macros)
+	if err != nil {
+		return err
+	}
+
+	prev := w.args
+	w.args = args                    // 当前参数列表 (var 递归时 = varNode.Args)
+	defer func() { w.args = prev }() // 递归返回后恢复, 外层宏继续用外层参数
+
+	for _, it := range items {
+		switch it.kind {
+		case itemText:
+			w.sb.WriteString(it.val)
+
+		case itemMacro:
+			if err := d.renderMacro(w, it); err != nil {
+				return err
+			}
+		default:
+			// itemError 已被 lex 过滤, 此处兜底未来扩展的 token 类型
+			return fmt.Errorf("dba: unexpected token kind %d", it.kind)
+		}
+	}
+	return nil
 }
 
 // renderMacro 渲染宏 token: '#' = 管道容器, '$' = 变量 (结构层), 其他 = 宏别名。
-func (d *SQL) renderMacro(bw RenderCtx, render func([]item, []any) error, it item, args []any) error {
+func (d *SQL) renderMacro(bw *buildRenderCtx, it item) error {
 	// $ 变量: 结构层 (模板递归), 不经管道
 	if it.prefix == '$' {
 		parts := strings.SplitN(it.val, ":", 2)
 		key := strings.TrimSpace(parts[0])
 		if varNode, ok := d.varNodes[key]; ok {
-			sub, err := lex(varNode.RawSQL, d.macros)
-			if err != nil {
-				return err
-			}
-			return render(sub, varNode.Args)
+			return d.renderText(bw, varNode.Text, varNode.Args)
 		}
 		if len(parts) == 2 {
-			sub, err := lex(strings.TrimSpace(parts[1]), d.macros)
-			if err != nil {
-				return err
-			}
-			return render(sub, nil)
+			return d.renderText(bw, strings.TrimSpace(parts[1]), nil)
 		}
 		return fmt.Errorf("dba: undefined variable ${%s}", key)
 	}
@@ -682,5 +668,5 @@ func splitKeyPipe(content string) (key, pipe string, hasPipe bool) {
 	if idx := strings.IndexByte(content, '|'); idx >= 0 {
 		return strings.TrimSpace(content[:idx]), strings.TrimSpace(content[idx+1:]), true
 	}
-	return strings.TrimSpace(content), "bind", false
+	return strings.TrimSpace(content), "", false // 无管道: renderMacro 用宏默认
 }

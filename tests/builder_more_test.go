@@ -61,7 +61,7 @@ func TestConcurrentBuilders(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				ctx.AddParam(v)
+				ctx.Bind(v)
 				return nil
 			})
 			if _, _, err := q.Add("SELECT #{1|"+name+"}", i).ToSQL(); err != nil {
@@ -153,7 +153,7 @@ func TestNestedVarWithPipesAndMacros(t *testing.T) {
 func TestPipeMidwayError(t *testing.T) {
 	q, _ := newQ(t)
 	q = q.RegisterPipe("boom", func(ctx dba.RenderCtx, content string) error {
-		ctx.AddParam(content)                  // 先写占位符 (字面量)
+		ctx.Bind(content)                      // 先写占位符 (字面量)
 		return fmt.Errorf("boom: pipe failed") // 再报错
 	})
 	_, _, err := q.Add("SELECT #{1|boom} FROM t", 1).ToSQL()

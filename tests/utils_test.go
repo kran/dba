@@ -71,8 +71,8 @@ func TestColumnsAndValuesTimeValue(t *testing.T) {
 	if v := findVal(t, keys, vals, "created_at"); v.(time.Time) != now {
 		t.Fatalf("created_at mismatch: %v", v)
 	}
-	// 指针 time.Time 照旧
-	if v := findVal(t, keys, vals, "updated_at"); v.(*time.Time) != &now {
+	// 指针 time.Time 解引用后按值绑定 (driver 原生类型)
+	if v := findVal(t, keys, vals, "updated_at"); v.(time.Time) != now {
 		t.Fatalf("updated_at mismatch: %v", v)
 	}
 	// 嵌套 struct 内的 time.Time
@@ -128,7 +128,8 @@ func TestColumnsAndValuesTimeAlias(t *testing.T) {
 	if len(keys) != 1 || keys[0] != "at" {
 		t.Fatalf("alias time should be atomic column, keys=%v", keys)
 	}
-	if v, ok := vals[0].(tkvAliasTime); !ok || time.Time(v) != now {
+	// 别名 Convert 为 time.Time (normalizeBindValue — 绑得出去)
+	if v, ok := vals[0].(time.Time); !ok || !v.Equal(now) {
 		t.Fatalf("at mismatch: %v", vals[0])
 	}
 	// 零值 + omitempty: 跳过
@@ -225,8 +226,8 @@ func TestColumnsAndValuesEdgeCases(t *testing.T) {
 	if v := findVal(t, keys, vals, "s"); v.(int) != 0 {
 		t.Fatalf("nil sub should expand to zero value, got %v", v)
 	}
-	// 指针链取值 (二级指针整体绑定, driver 层不支持, 但取值与列集正确)
-	if v := findVal(t, keys, vals, "pp"); v.(**time.Time) != &pp {
+	// 指针链取值 (二级指针解引用一级 → *time.Time 绑定)
+	if v := findVal(t, keys, vals, "pp"); v.(*time.Time) != pp {
 		t.Fatalf("pp mismatch: %v", v)
 	}
 	// 列名集合: 不含中间 struct 列名

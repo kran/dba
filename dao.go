@@ -60,9 +60,9 @@ func (d *Dao[T]) Vars(alias string) map[string]Node {
 	}
 	m := make(map[string]Node, 3)
 	qa := d.q.quoter(alias)
-	m[alias+".as"] = Node{RawSQL: d.quotedTbl + " AS " + qa}
-	m[alias] = Node{RawSQL: qa}
-	m[alias+".pk"] = Node{RawSQL: qa + "." + d.quotedPK}
+	m[alias+".as"] = Node{Text: d.quotedTbl + " AS " + qa}
+	m[alias] = Node{Text: qa}
+	m[alias+".pk"] = Node{Text: qa + "." + d.quotedPK}
 	return m
 }
 

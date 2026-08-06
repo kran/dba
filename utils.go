@@ -50,7 +50,14 @@ func Scalar[T any](d *SQL) (T, bool, error) {
 	return v, found, err
 }
 
-// Page the query must contain ${F:...} so that Page can swap the field list for COUNT(1).
+// Page fetches a page of rows and the total count.
+//
+// Contract: the query must contain the ${F:...} slot (or bare ${F}) on the
+// main chain — the F slot is substituted with COUNT(1) for the count query.
+// Constraints: no GROUP BY / DISTINCT in the F slot content (the count query
+// reuses the same template); ORDER BY must live in its own slot/variable so
+// the count query can drop it.
+// The total==0 case skips the data query entirely.
 func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 	if page < 1 {
 		page = 1
@@ -59,19 +66,20 @@ func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
 		size = 10
 	}
 
+	// F 槽必须在主链 (${F:...} 或裸 ${F}): 探测两种形态, 避免 ${From} 误报
 	hasF := false
-	needle := "${" + F
 	for _, node := range q.mainNodes {
-		if strings.Contains(node.RawSQL, needle) {
+		if strings.Contains(node.Text, "${"+F+":") || strings.Contains(node.Text, "${"+F+"}") {
 			hasF = true
 			break
 		}
 	}
 	if !hasF {
-		return nil, 0, fmt.Errorf("dba: page requires ${%s:...} in query", F)
+		return nil, 0, fmt.Errorf("dba: page requires ${%s:...} in query (main chain)", F)
 	}
 
-	total, _, err := Scalar[int64](q.Var(F, "COUNT(1)"))
+	// count 查询: F → COUNT(1), 并清空排序变量 (count 不需要排序, 白付)
+	total, _, err := Scalar[int64](q.Var(F, "COUNT(1)").Var(O, ""))
 	var items []T
 	if err != nil || total == 0 {
 		return items, total, err
@@ -116,11 +124,12 @@ func IsOk(v any) bool {
 // ColumnsAndValues 把 struct 或 map 转换为列名与参数值列表。
 //
 // struct 策略: 自建递归遍历 (fieldList) 生成字段清单, 遍历时即时判定:
-//   - 原子类型 (driver.Valuer 实现者 / time.Time 及其可转换别名) 作为单列收束;
+//   - 原子类型 (driver.Valuer 实现者 / time.Time 及其可转换别名 / Node) 作为单列收束;
 //   - struct (匿名嵌入或普通字段, 值或指针) 递归展开子字段;
 //   - 其余基本类型/[]byte 直接作为单列。
 //
-// time.Time 不实现 Valuer (database/sql 原生参数类型), 由 isAtomicColumn 显式特判。
+// 收集到的字段值经 normalizeBindValue 归一化后进入 vals。
+// map 分支的值不做归一化 (与 Add 的参数同级: 用户直接给什么绑什么)。
 func ColumnsAndValues(model any, omitempty bool) ([]string, []any, error) {
 	rv := reflect.ValueOf(model)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
@@ -161,13 +170,42 @@ func ColumnsAndValues(model any, omitempty bool) ([]string, []any, error) {
 	vals := make([]any, 0, len(fields))
 	for _, f := range fields {
 		val := fieldByPath(rv, f.path)
+		// omitempty 判断先于归一化: 指针只看 nilness (逃生舱语义)
 		if omitempty && f.omitempty && isZeroValue(val) {
 			continue
 		}
 		keys = append(keys, f.key)
-		vals = append(vals, val.Interface())
+		vals = append(vals, normalizeBindValue(val).Interface())
 	}
 	return keys, vals, nil
+}
+
+// normalizeBindValue 归一化 struct 字段的绑定值 (omitempty 判断之后调用):
+//
+//  1. 非 nil 指针解引用一级 — 但指针自身实现 Valuer 的除外 (指针接收者的
+//     Value 方法只在 *T 上, 解引用会剥掉它, 导致 driver 报 unsupported)。
+//     nil 指针原样保留 (Bind 的 *Node nil case / driver 按 NULL 处理)。
+//     注: 主流 driver 的 DefaultParameterConverter 本也会解指针; 这里自行
+//     解引用是为了 *Node → Node 直达 Bind 内联, 并且不依赖各 driver
+//     converter 行为一致 (自定义 NamedValueChecker 的 driver 可能不同)。
+//
+//  2. time.Time 的可转换别名 (type MyTime time.Time, 自身无 Valuer) 转换为
+//     time.Time — isAtomicColumn 按 ConvertibleTo 判它为单列, 但别名类型
+//     本身不是 driver 原生类型也无 Valuer, 不转换绑不进去。
+//     time.Time 本尊、Node、Valuer 实现者均不转换 (各有自己的绑定路径)。
+func normalizeBindValue(val reflect.Value) reflect.Value {
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() || val.Type().Implements(valuableType) {
+			return val
+		}
+		val = val.Elem()
+	}
+	t := val.Type()
+	if t.Kind() == reflect.Struct && t != timeType && t != nodeType &&
+		!t.Implements(valuableType) && t.ConvertibleTo(timeType) {
+		val = val.Convert(timeType)
+	}
+	return val
 }
 
 // fieldByPath 沿索引路径取值, 自动穿越指针/接口中间层。
@@ -254,14 +292,21 @@ var valuableType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 //  1. 实现 driver.Valuer (sql.NullString/NullInt64/自定义类型)
 //  2. time.Time 及其可转换别名 — database/sql 原生参数类型, 不实现 Valuer;
 //     用 ConvertibleTo 而非 ==, 覆盖 type MyTime time.Time 这类别名 (对齐 GORM schema.ParseField)
+//
+// nodeType Node 的反射类型: Node 字段整体作为单列 (值原样流到 Bind 内联)。
+var nodeType = reflect.TypeOf(Node{})
+
 func isAtomicColumn(t reflect.Type) bool {
-	return t.ConvertibleTo(timeType) || t.Implements(valuableType)
+	return t == nodeType || t.ConvertibleTo(timeType) || t.Implements(valuableType)
 }
 
-// isZeroValue 指针解引用后的零值判断 (omitempty 语义)。
+// isZeroValue omitempty 语义的零值判断。
+// 指针只判 nilness 不解引用: nil = 未设置 (跳过), 非 nil = 显式赋值
+// (即使指向零值也保留) — 这是 omitempty 字段写入零值的逃生舱,
+// 与 encoding/json 的 omitempty 约定一致。
 func isZeroValue(v reflect.Value) bool {
-	for v.Kind() == reflect.Ptr && !v.IsNil() {
-		v = v.Elem()
+	if v.Kind() == reflect.Ptr {
+		return v.IsNil()
 	}
 	return v.IsZero()
 }
