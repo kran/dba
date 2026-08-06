@@ -29,7 +29,7 @@ reuse, and similar patterns.
 ## Install
 
 ```
-go get github.com/yourname/dba
+go get github.com/kran/dba
 ```
 
 Depends on `jmoiron/sqlx`. Create via `Open(driver, dsn)` or

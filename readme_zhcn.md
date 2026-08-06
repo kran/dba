@@ -20,7 +20,7 @@ err := db.Select("users", "status = #{1}", "active").
 ## 安装
 
 ```
-go get github.com/yourname/dba
+go get github.com/kran/dba
 ```
 
 依赖 `jmoiron/sqlx`。通过 `Open(driver, dsn)` 或 `NewFromSqlx(*sqlx.DB)` 创建,自动按驱动选择占位符格式(Postgres 系为 `$n`,其余为 `?`)与标识符 quoting(MySQL 反引号,其余 ANSI 双引号),可用 `Formatter`/`Quoter` 覆盖。
