@@ -162,26 +162,20 @@ func lexMacro(l *lexer) stateFn {
 	return l.errorf("unclosed macro %c{", l.prefix)
 }
 
-// lexQuote 引号字面量: 跳过直到闭合引号 (支持 \x 转义与 ” 双写), 闭合后回外层状态。
+// lexQuote 引号字面量: 跳过直到闭合引号, ” 双写视为续接。
+// 刻意不处理反斜杠转义 —— lexer 只找字面量边界 (防引号内的 #{ 被
+// 误认为宏), 不解释内容; 转义语义 (MySQL \x / PG E” / sql_mode)
+// 归数据库, lexer 按标准 SQL 的边界规则扫描: 引号结束于下一个
+// 非双写的同引号。
 func lexQuote(l *lexer) stateFn {
-	quote := l.input[l.pos-1] // 已消费的开引号
+	quote := l.input[l.pos-1]
 	for l.pos < len(l.input) {
-		switch c := l.input[l.pos]; c {
-		case '\\':
-			l.next()
-			if l.pos < len(l.input) {
-				l.next()
-			}
-		case quote:
-			l.next() // 消费闭引号
-			// '' 双写转义: 立即跟同引号 → 继续
+		if l.next() == quote {
 			if l.pos < len(l.input) && l.input[l.pos] == quote {
-				l.next()
+				l.next() // '' 双写: 续接
 				continue
 			}
 			return l.prev
-		default:
-			l.next()
 		}
 	}
 	return l.errorf("unclosed quote")
