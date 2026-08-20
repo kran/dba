@@ -16,8 +16,8 @@ func setupItemsTable(t *testing.T, q *dba.SQL) {
 
 func countItems(t *testing.T, q *dba.SQL) int {
 	t.Helper()
-	var n int
-	if _, err := q.Add("SELECT COUNT(*) FROM items").Get(&n); err != nil {
+	n, _, err := q.Add("SELECT COUNT(*) FROM items").FetchOne[int]()
+	if err != nil {
 		t.Fatal(err)
 	}
 	return n

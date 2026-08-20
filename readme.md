@@ -13,12 +13,11 @@ SQL, but with an immutable chainable API instead of XML.
 ```go
 db, _ := dba.Open("pgx", dsn)
 
-var users []User
-err := db.Select("users", "status = #{1}", "active").
+users, err := db.Select("users", "status = #{1}", "active").
     AddIf(name != "", "AND name LIKE #{1}", "%"+name+"%").
     AddIf(len(ids) > 0, "AND id IN (#{1|expand})", ids).
     Add("ORDER BY created_at DESC").
-    List(&users)
+    FetchList[User]()
 ```
 
 One sentence for the core property: **the builder is immutable**. Every method
@@ -32,7 +31,8 @@ reuse, and similar patterns.
 go get github.com/kran/dba
 ```
 
-Depends on `jmoiron/sqlx`. Create via `Open(driver, dsn)` or
+Depends on `jmoiron/sqlx`. Requires **Go 1.27+** (generic methods). Create via
+`Open(driver, dsn)` or
 `NewFromSqlx(*sqlx.DB)`; placeholder format is chosen automatically by driver
 (`$n` for the Postgres family, `?` otherwise) and identifier quoting too
 (MySQL backticks, ANSI double quotes elsewhere), overridable with
@@ -187,20 +187,20 @@ row to share the same column set — per-row omission would drift the set.
 Generators and utilities cooperate through three conventional variable names,
 all built on `${var:default}` late binding:
 
-**F — column list slot.** `Select` generates `${F:*}`, `Page` forks the same
+**F — column list slot.** `Select` generates `${F:*}`, `FetchPage` forks the same
 builder into a count query via `Var(F, "COUNT(1)")`. To feed hand-written SQL
-to `Page`, embed `${F:*}` on the main chain:
+to `FetchPage`, embed `${F:*}` on the main chain:
 
 ```go
 q := db.Add(`SELECT ${F:*} FROM orders o JOIN users u ON o.uid = u.id WHERE o.status = #{1}`, st)
-items, total, err := dba.Page[Order](q, 1, 20)
+items, total, err := q.FetchPage[Order](1, 20)
 ```
 
-`Page`'s count is a plain substitution — **not for GROUP BY / DISTINCT
+`FetchPage`'s count is a plain substitution — **not for GROUP BY / DISTINCT
 queries**; write your own count for those.
 
 **O — sort slot** (optional optimization). Write ORDER BY as
-`${order:ORDER BY id DESC}` and `Page`'s count query clears it, saving a
+`${order:ORDER BY id DESC}` and `FetchPage`'s count query clears it, saving a
 pointless sort. A bare ORDER BY still works, just pays the sort on the count.
 
 **I — INSERT modifier slot.** `Insert` generates `INSERT ${I:} INTO ...`,
@@ -214,16 +214,39 @@ db.Var(dba.I, "IGNORE").Insert("users", u)   // INSERT IGNORE INTO ...
 
 ## Execution and scanning
 
+Every result-taking method shares the `Fetch` verb (one prefix, full family
+visible via autocomplete):
+
 ```go
-err  := q.List(&users)              // many rows → slice pointer (struct/basic types)
-ms, err := q.ListMap()              // many rows → []map[string]any (columns unknown at compile time)
-found, err := q.Get(&user)          // one row; no match → found=false, no ErrNoRows
-m, found, err := q.GetMap()         // one row → map
-v, found, err := dba.Scalar[int64](q) // single value
-result, err := q.Exec()             // non-query
-rows, err := q.Rows()               // raw cursor (streaming)
-sql, args, err := q.ToSQL()         // build only, don't execute
+// one row: strict 0..1 (0 rows → (zero, false, nil); more than one → error;
+// write LIMIT 1 to express "any row")
+u, found, err := q.FetchOne[User]()
+// many rows (struct/basic types; single-column queries work too)
+items, err := q.FetchList[User]()
+// single value (a scalar is a degenerate one-row case)
+v, found, err := q.FetchOne[int64]()
+// page + count (requires the ${F} slot)
+items, total, err := q.FetchPage[User](1, 20)
+// keyed: query-level IndexBy / GroupBy (duplicate keys error)
+m, err := q.FetchIndexed[int](func(u User) int { return u.ID })
+g, err := q.FetchGrouped[int](func(u User) int { return u.OrgID })
+// dynamic columns (unknown at compile time)
+m, found, err := q.FetchOneMap()
+ms, err := q.FetchMaps()
+// streaming: lazy iterator (break-safe; check err per row)
+for u, err := range q.Iter[User]() {
+    if err != nil { return err }
+    // ...
+}
+// eager raw cursor (executes immediately)
+rows, err := q.FetchRows()
+// not a fetch
+result, err := q.Exec()
+sql, args, err := q.ToSQL()
 ```
+
+`Fetch*` methods are generic (Go 1.27+): they return values instead of
+taking a dest pointer.
 
 Builder errors (invalid generator input, mismatched Batch widths, ...)
 accumulate along the chain; subsequent operations no-op and the error is
@@ -277,21 +300,23 @@ func (u *User) BeforeCreate() error {
 userDao := dba.NewDao[User](db, "users")          // default pk id, override with .PK("uid")
 
 id, err := userDao.Create(&u)                      // returns auto-increment/RETURNING pk
-u, err  := userDao.GetByID(42)                     // not found → (nil, nil); check nil first
-u, err  := userDao.Get("email = #{1}", email)
-list, err := userDao.List("deleted = 0")
+u, ok, err  := userDao.GetByID(42)                 // not found → (zero, false, nil); check ok first
+u, ok, err  := userDao.FetchOne("email = #{1}", email) // strict 0..1, errors on multiple rows
+list, err := userDao.FetchList("deleted = 0")
 n, err  := userDao.Update(dba.H{"name": "x"}, "id = #{1}", 42)
 n, err  := userDao.Delete("id = #{1}", 42)
 ok, err := userDao.Exists("email = #{1}", email)
-items, total, err := userDao.Page(1, 20, "deleted = 0")
+items, total, err := userDao.FetchPage(1, 20, "deleted = 0")
 n, err  := userDao.Batch(users)                    // bulk insert, returns affected rows
 ```
 
 Design points:
 
-**Not found is not an error.** `Get`/`GetByID` return `(nil, nil)` when
-nothing matches — not `sql.ErrNoRows`. "No row" is a normal business outcome;
-callers check nil, no `errors.Is` everywhere.
+**Not found is not an error.** `FetchOne`/`GetByID` return `(zero, false, nil)`
+when nothing matches — not `sql.ErrNoRows`. "No row" is a normal business
+outcome; callers check `ok`, no `errors.Is` everywhere. `FetchOne` is strict
+0..1 (multiple rows error, so primary-key lookups self-check data integrity);
+use `FetchList` when the condition doesn't guarantee uniqueness.
 
 **Raw series keeps full chaining.** `RawCreate`/`RawSelect`/`RawBatch` return
 a builder instead of executing, so complex needs (ON CONFLICT, RETURNING,
@@ -301,7 +326,7 @@ extra conditions) keep building on top of the Dao:
 err := userDao.RawCreate(&u).
     Add("ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name").
     Add("RETURNING " + "id").
-    Get(&u.ID)
+    FetchOne[int64]()
 ```
 
 **Transaction propagation.** `dao.WithTx(tx)` returns a Dao copy bound to the

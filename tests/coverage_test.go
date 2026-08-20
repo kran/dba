@@ -64,7 +64,7 @@ func TestCov_DAORawSelectPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Page
-	items, total, err := dao.Page(1, 2, "1=1")
+	items, total, err := dao.FetchPage(1, 2, "1=1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestCov_DAORawSelectPage(t *testing.T) {
 		t.Fatalf("page: %d items, %d total", len(items), total)
 	}
 	// Page 带条件
-	if _, _, err := dao.Page(1, 10, "id > #{1}", 1); err != nil {
+	if _, _, err := dao.FetchPage(1, 10, "id > #{1}", 1); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -128,8 +128,8 @@ func TestCov_DAOWithCtxTable(t *testing.T) {
 	db.Exec("CREATE TABLE cov_ctx (id INTEGER PRIMARY KEY)")
 	dao := dba.NewDao[covUser](q, "cov_ctx")
 	dao2 := dao.WithCtx(t.Context()).Table("cov_ctx")
-	if _, err := dao2.GetByID(1); err != nil {
-		t.Fatal(err) // 不存在 → (nil, nil) 不报错
+	if _, _, err := dao2.GetByID(1); err != nil {
+		t.Fatal(err) // 不存在 → (零值, false, nil) 不报错
 	}
 }
 
@@ -143,30 +143,30 @@ func TestCov_ExecRowsAffected(t *testing.T) {
 	}
 }
 
-// ── 覆盖补充 2: List/Get map 分支 + Batch/BatchInsert 错误分支 ──
+// ── 覆盖补充 2: FetchMaps/FetchOneMap 分支 + Batch/BatchInsert 错误分支 ──
 
-func TestCov_ListGetMap(t *testing.T) {
+func TestCov_FetchMapsOneMap(t *testing.T) {
 	q, db := newQ(t)
 	db.Exec("CREATE TABLE cov_map (id INTEGER PRIMARY KEY, name TEXT)")
 	db.Exec("INSERT INTO cov_map VALUES (1, 'a'), (2, 'b')")
 
-	// ListMap: 动态列查询
-	ms, err := q.Add("SELECT * FROM cov_map").ListMap()
+	// FetchMaps: 动态列查询
+	ms, err := q.Add("SELECT * FROM cov_map").FetchMaps()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ms) != 2 {
-		t.Fatalf("ListMap: %d rows", len(ms))
+		t.Fatalf("FetchMaps: %d rows", len(ms))
 	}
-	// GetMap: 单行 map
-	m, found, err := q.Add("SELECT * FROM cov_map WHERE id = #{1}", 1).GetMap()
+	// FetchOneMap: 单行 map
+	m, found, err := q.Add("SELECT * FROM cov_map WHERE id = #{1}", 1).FetchOneMap()
 	if err != nil || !found {
-		t.Fatalf("GetMap: found=%v err=%v", found, err)
+		t.Fatalf("FetchOneMap: found=%v err=%v", found, err)
 	}
-	// GetMap 未找到
-	m, found, err = q.Add("SELECT * FROM cov_map WHERE id = #{1}", 99).GetMap()
+	// FetchOneMap 未找到
+	m, found, err = q.Add("SELECT * FROM cov_map WHERE id = #{1}", 99).FetchOneMap()
 	if err != nil || found || m != nil {
-		t.Fatalf("GetMap missing: found=%v m=%v err=%v", found, m, err)
+		t.Fatalf("FetchOneMap missing: found=%v m=%v err=%v", found, m, err)
 	}
 }
 
@@ -266,17 +266,15 @@ func TestCov_AddVarOnErrorInstance(t *testing.T) {
 func TestCov_ListGetExecErrors(t *testing.T) {
 	q, _ := newQ(t)
 	// List 执行错误
-	var items []covUser
-	if err := q.Add("SELECT * FROM cov_missing_tbl").List(&items); err == nil {
+	if _, err := q.Add("SELECT * FROM cov_missing_tbl").FetchList[covUser](); err == nil {
 		t.Fatal("list on missing table should error")
 	}
 	// Get 执行错误
-	var u covUser
-	if _, err := q.Add("SELECT * FROM cov_missing_tbl").Get(&u); err == nil {
+	if _, _, err := q.Add("SELECT * FROM cov_missing_tbl").FetchOne[covUser](); err == nil {
 		t.Fatal("get on missing table should error")
 	}
 	// Rows 执行错误
-	if _, err := q.Add("SELECT * FROM cov_missing_tbl").Rows(); err == nil {
+	if _, err := q.Add("SELECT * FROM cov_missing_tbl").FetchRows(); err == nil {
 		t.Fatal("rows on missing table should error")
 	}
 }
@@ -311,7 +309,7 @@ func TestCov_BatchInsertMixedErrors(t *testing.T) {
 
 func TestCov_RowsError(t *testing.T) {
 	q, _ := newQ(t)
-	if _, err := q.Add("SELECT * FROM no_such_table_cov").Rows(); err == nil {
+	if _, err := q.Add("SELECT * FROM no_such_table_cov").FetchRows(); err == nil {
 		t.Fatal("rows on missing table should error")
 	}
 }

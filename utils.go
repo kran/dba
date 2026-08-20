@@ -3,12 +3,13 @@ package dba
 import (
 	"database/sql/driver"
 	"fmt"
-	"github.com/jmoiron/sqlx/reflectx"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jmoiron/sqlx/reflectx"
 )
 
 // Map transforms each element of a slice using fn and returns a new slice.
@@ -44,15 +45,27 @@ func GroupBy[T any, K comparable](slice []T, fn func(T) K) map[K][]T {
 	return m
 }
 
-// Scalar returns a single scalar value from a query.
-// bool is false when the query returned no row.
-func Scalar[T any](d *SQL) (T, bool, error) {
-	var v T
-	found, err := d.Get(&v)
-	return v, found, err
+// FetchIndexed fetches all rows and indexes them into a map keyed by
+// key(v) — 查询版 IndexBy。重复键报错 (与 IndexBy 一致)。
+func (d *SQL) FetchIndexed[K comparable, V any](key func(V) K) (map[K]V, error) {
+	list, err := d.FetchList[V]()
+	if err != nil {
+		return nil, err
+	}
+	return IndexBy(list, key)
 }
 
-// Page fetches a page of rows and the total count.
+// FetchGrouped fetches all rows and groups them into a map keyed by
+// key(v) — 查询版 GroupBy。每个键对应一个值切片 (保持查询顺序)。
+func (d *SQL) FetchGrouped[K comparable, V any](key func(V) K) (map[K][]V, error) {
+	list, err := d.FetchList[V]()
+	if err != nil {
+		return nil, err
+	}
+	return GroupBy(list, key), nil
+}
+
+// FetchPage fetches a page of rows and the total count.
 //
 // Contract: the query must contain the ${F:...} slot (or bare ${F}) on the
 // main chain — the F slot is substituted with COUNT(1) for the count query.
@@ -63,37 +76,35 @@ func Scalar[T any](d *SQL) (T, bool, error) {
 // Var(O, "") — a bare ORDER BY still works but the count query pays the
 // sort). Example:
 //
-//	q.Add("SELECT ... WHERE x ${O:ORDER BY id DESC}") // then Page(q, 1, 20)
+//	q.Add("SELECT ... WHERE x ${O:ORDER BY id DESC}") // then q.FetchPage[User](1, 20)
 //
+// page/size 必须 >= 1, 否则报错 (不静默钳制, 尽早暴露调用方的参数 bug)。
 // The total==0 case skips the data query entirely.
-func Page[T any](q *SQL, page, size int) ([]T, int64, error) {
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 {
-		size = 10
+func (d *SQL) FetchPage[T any](page, size int) ([]T, int64, error) {
+	if page < 1 || size < 1 {
+		return nil, 0, fmt.Errorf("dba: fetch page: page & size must be >= 1, got (%d, %d)", page, size)
 	}
 
 	// F 槽必须在主链 (${F:...} 或裸 ${F}): 探测两种形态, 避免 ${From} 误报
 	hasF := false
-	for _, node := range q.mainNodes {
+	for _, node := range d.mainNodes {
 		if strings.Contains(node.Text, "${"+F+":") || strings.Contains(node.Text, "${"+F+"}") {
 			hasF = true
 			break
 		}
 	}
 	if !hasF {
-		return nil, 0, fmt.Errorf("dba: page requires ${%s:...} in query (main chain)", F)
+		return nil, 0, fmt.Errorf("dba: fetch page: query requires ${%s:...} (main chain)", F)
 	}
 
 	// count 查询: F → COUNT(1), 并清空排序变量 (count 不需要排序, 白付)
-	total, _, err := Scalar[int64](q.Var(F, "COUNT(1)").Var(O, ""))
+	total, _, err := d.Var(F, "COUNT(1)").Var(O, "").FetchOne[int64]()
 	var items []T
 	if err != nil || total == 0 {
 		return items, total, err
 	}
 	offset := (page - 1) * size
-	err = q.Add("LIMIT #{1} OFFSET #{2}", size, offset).List(&items)
+	items, err = d.Add("LIMIT #{1} OFFSET #{2}", size, offset).FetchList[T]()
 	return items, total, err
 }
 
@@ -110,7 +121,7 @@ func IsOk(v any) bool {
 	}
 
 	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return false
 		}
@@ -144,7 +155,7 @@ func IsOk(v any) bool {
 // exactly what the caller passed).
 func ColumnsAndValues(model any, omitempty bool) ([]string, []any, error) {
 	rv := reflect.ValueOf(model)
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return []string{}, []any{}, nil
 		}
@@ -206,7 +217,7 @@ func ColumnsAndValues(model any, omitempty bool) ([]string, []any, error) {
 //     本身不是 driver 原生类型也无 Valuer, 不转换绑不进去。
 //     time.Time 本尊、Node、Valuer 实现者均不转换 (各有自己的绑定路径)。
 func normalizeBindValue(val reflect.Value) reflect.Value {
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		if val.IsNil() || val.Type().Implements(valuableType) {
 			return val
 		}
@@ -227,7 +238,7 @@ func fieldByPath(rv reflect.Value, path []int) reflect.Value {
 	// 先沿类型推导目标字段类型 (穿越指针/接口)
 	t := rv.Type()
 	for _, i := range path {
-		for t.Kind() == reflect.Ptr || t.Kind() == reflect.Interface {
+		for t.Kind() == reflect.Pointer || t.Kind() == reflect.Interface {
 			t = t.Elem()
 		}
 		t = t.Field(i).Type
@@ -235,7 +246,7 @@ func fieldByPath(rv reflect.Value, path []int) reflect.Value {
 	// 再沿值取字段 (nil 指针/接口 → 返回目标零值)
 	cur := rv
 	for _, i := range path {
-		for cur.Kind() == reflect.Ptr || cur.Kind() == reflect.Interface {
+		for cur.Kind() == reflect.Pointer || cur.Kind() == reflect.Interface {
 			if cur.IsNil() {
 				return reflect.Zero(t)
 			}
@@ -285,7 +296,7 @@ func fieldList(t reflect.Type) []kvField {
 				continue
 			}
 			ft := fi.Field.Type
-			for ft.Kind() == reflect.Ptr {
+			for ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct && !isAtomicColumn(ft) {
@@ -306,13 +317,13 @@ func fieldList(t reflect.Type) []kvField {
 }
 
 // timeType time.Time 是 database/sql 原生参数类型 (不实现 driver.Valuer)。
-var timeType = reflect.TypeOf(time.Time{})
+var timeType = reflect.TypeFor[time.Time]()
 
 // valuableType driver.Valuer 接口类型。
-var valuableType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
+var valuableType = reflect.TypeFor[driver.Valuer]()
 
 // nodeType Node 的反射类型。
-var nodeType = reflect.TypeOf(Node{})
+var nodeType = reflect.TypeFor[Node]()
 
 // isAtomicColumn 判断 struct 类型是否应整体作为单列写入:
 //  1. 实现 driver.Valuer (sql.NullString/NullInt64/自定义类型)
@@ -329,7 +340,7 @@ func isAtomicColumn(t reflect.Type) bool {
 // (即使指向零值也保留) — 这是 omitempty 字段写入零值的逃生舱,
 // 与 encoding/json 的 omitempty 约定一致。
 func isZeroValue(v reflect.Value) bool {
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		return v.IsNil()
 	}
 	return v.IsZero()

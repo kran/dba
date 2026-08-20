@@ -592,7 +592,7 @@ func TestVal_Int(t *testing.T) {
 	db.Exec("INSERT INTO items VALUES (1, 10)")
 	db.Exec("INSERT INTO items VALUES (2, 20)")
 
-	count, _, err := dba.Scalar[int](q.Add("SELECT COUNT(1) FROM items"))
+	count, _, err := q.Add("SELECT COUNT(1) FROM items").FetchOne[int]()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +606,7 @@ func TestVal_String(t *testing.T) {
 	db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name text)")
 	db.Exec("INSERT INTO items VALUES (1, 'hello')")
 
-	name, _, err := dba.Scalar[string](q.Add("SELECT name FROM items WHERE id = #{1}", 1))
+	name, _, err := q.Add("SELECT name FROM items WHERE id = #{1}", 1).FetchOne[string]()
 	if err != nil {
 		t.Fatal(err)
 	}

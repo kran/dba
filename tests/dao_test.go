@@ -37,9 +37,9 @@ func TestDao_Create(t *testing.T) {
 		t.Errorf("expected id 1, got %d", id)
 	}
 
-	item, _ := dao.GetByID(id)
+	item, _, _ := dao.GetByID(id)
 	if item.Name != "foo" || item.Val != 10 {
-		t.Errorf("got %+v", *item)
+		t.Errorf("got %+v", item)
 	}
 }
 
@@ -59,27 +59,27 @@ func TestDao_Get(t *testing.T) {
 	dao.Create(Item{Name: "alice", Val: 1})
 	dao.Create(Item{Name: "bob", Val: 2})
 
-	item, err := dao.Get("name = #{1}", "bob")
+	item, ok, err := dao.FetchOne("name = #{1}", "bob")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item == nil {
-		t.Fatal("expected non-nil")
+	if !ok {
+		t.Fatal("expected found")
 	}
 	if item.Name != "bob" || item.Val != 2 {
-		t.Errorf("got %+v", *item)
+		t.Errorf("got %+v", item)
 	}
 }
 
 func TestDao_Get_NotFound(t *testing.T) {
 	dao, _ := setupDao(t)
 
-	item, err := dao.Get("name = #{1}", "nobody")
+	item, ok, err := dao.FetchOne("name = #{1}", "nobody")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item != nil {
-		t.Errorf("expected nil, got %+v", *item)
+	if ok {
+		t.Errorf("expected not found, got %+v", item)
 	}
 }
 
@@ -87,27 +87,27 @@ func TestDao_GetByID(t *testing.T) {
 	dao, _ := setupDao(t)
 	dao.Create(Item{Name: "alice", Val: 42})
 
-	item, err := dao.GetByID(1)
+	item, ok, err := dao.GetByID(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item == nil {
-		t.Fatal("expected non-nil")
+	if !ok {
+		t.Fatal("expected found")
 	}
 	if item.Name != "alice" {
-		t.Errorf("got %+v", *item)
+		t.Errorf("got %+v", item)
 	}
 }
 
 func TestDao_GetByID_NotFound(t *testing.T) {
 	dao, _ := setupDao(t)
 
-	item, err := dao.GetByID(999)
+	item, ok, err := dao.GetByID(999)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item != nil {
-		t.Errorf("expected nil, got %+v", *item)
+	if ok {
+		t.Errorf("expected not found, got %+v", item)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestDao_List(t *testing.T) {
 	dao.Create(Item{Name: "b", Val: 2})
 	dao.Create(Item{Name: "c", Val: 3})
 
-	items, err := dao.List("val >= #{1}", 2)
+	items, err := dao.FetchList("val >= #{1}", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestDao_All(t *testing.T) {
 	dao.Create(Item{Name: "a", Val: 1})
 	dao.Create(Item{Name: "b", Val: 2})
 
-	items, err := dao.All()
+	items, err := dao.FetchAll()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestDao_Update(t *testing.T) {
 		t.Errorf("expected 1 affected, got %d", affected)
 	}
 
-	item, _ := dao.GetByID(1)
+	item, _, _ := dao.GetByID(1)
 	if item.Val != 99 {
 		t.Errorf("expected 99, got %d", item.Val)
 	}
@@ -303,9 +303,12 @@ func TestDao_CustomPrimaryKey(t *testing.T) {
 	dao.RawCreate(Config{Key: "theme", Val: "dark"}).Exec()
 	dao.RawCreate(Config{Key: "lang", Val: "zh"}).Exec()
 
-	cfg, err := dao.GetByID("theme")
+	cfg, ok, err := dao.GetByID("theme")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected found")
 	}
 	if cfg.Val != "dark" {
 		t.Errorf("expected dark, got %q", cfg.Val)
@@ -368,7 +371,7 @@ func TestDao_Hook_OnCreate_ModifiesField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, _ := dao.GetByID(id)
+	item, _, _ := dao.GetByID(id)
 	if item.Name != "hook_alice" {
 		t.Errorf("expected hook_alice, got %q", item.Name)
 	}
@@ -380,7 +383,7 @@ func TestDao_Hook_OnCreate_Pointer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, _ := dao.GetByID(id)
+	item, _, _ := dao.GetByID(id)
 	if item.Name != "hook_bob" {
 		t.Errorf("expected hook_bob, got %q", item.Name)
 	}
@@ -400,7 +403,7 @@ func TestDao_Hook_OnCreate_Map_SkipsHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, _ := dao.GetByID(id)
+	item, _, _ := dao.GetByID(id)
 	if item.Name != "raw" {
 		t.Errorf("expected raw (no hook), got %q", item.Name)
 	}
@@ -427,7 +430,7 @@ func TestDao_Hook_OnUpdate_Map_SkipsHook(t *testing.T) {
 	if affected != 1 {
 		t.Errorf("expected 1 affected, got %d", affected)
 	}
-	item, _ := dao.GetByID(1)
+	item, _, _ := dao.GetByID(1)
 	if item.Val != -1 {
 		t.Errorf("expected -1 (no hook), got %d", item.Val)
 	}
@@ -440,7 +443,7 @@ func TestDao_Hook_CreateRaw_ModifiesField(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := result.LastInsertId()
-	item, _ := dao.GetByID(id)
+	item, _, _ := dao.GetByID(id)
 	if item.Name != "hook_raw" {
 		t.Errorf("expected hook_raw, got %q", item.Name)
 	}
@@ -460,7 +463,7 @@ func TestDao_Q_CustomQuery(t *testing.T) {
 	dao.Create(Item{Name: "b", Val: 20})
 
 	// 使用 SQL() 构建自定义查询
-	sum, _, err := dba.Scalar[int64](dao.SQL().Add("SELECT SUM(val) FROM items"))
+	sum, _, err := dao.SQL().Add("SELECT SUM(val) FROM items").FetchOne[int64]()
 	if err != nil {
 		t.Fatal(err)
 	}

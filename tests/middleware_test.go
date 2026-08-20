@@ -27,8 +27,10 @@ func TestSetLogger_Logging(t *testing.T) {
 		captured.err = err
 	})
 
-	var val string
-	logged.Add("SELECT val FROM mw_test WHERE id = #{1}", 1).Get(&val)
+	val, _, err := logged.Add("SELECT val FROM mw_test WHERE id = #{1}", 1).FetchOne[string]()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if captured.query == "" {
 		t.Error("logger not called")
@@ -49,9 +51,12 @@ func TestSetLogger_ErrorStillFires(t *testing.T) {
 		lastErr = err
 	})
 
-	logged.Add("SELECT 1 FROM nonexistent_table").Get(new(int))
+	_, _, err := logged.Add("SELECT 1 FROM nonexistent_table").FetchOne[int]()
 	if lastErr == nil {
 		t.Error("logger should fire with error")
+	}
+	if err == nil {
+		t.Error("query on nonexistent table should error")
 	}
 }
 
@@ -66,13 +71,19 @@ func TestSetLogger_Immutable(t *testing.T) {
 	})
 
 	// 原始 q 不受影响
-	q.Add("SELECT COUNT(1) FROM mw_test4").Get(new(int))
+	_, _, err := q.Add("SELECT COUNT(1) FROM mw_test4").FetchOne[int]()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if called {
 		t.Error("logger should not affect original instance")
 	}
 
 	// withMW 才触发
-	withMW.Add("SELECT COUNT(1) FROM mw_test4").Get(new(int))
+	_, _, err = withMW.Add("SELECT COUNT(1) FROM mw_test4").FetchOne[int]()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !called {
 		t.Error("logger not called on SetLogger'd instance")
 	}
@@ -104,7 +115,7 @@ func TestSetLogger_WithRows(t *testing.T) {
 		callCount++
 	})
 
-	rows, err := logged.Add("SELECT id FROM mw_test6").Rows()
+	rows, err := logged.Add("SELECT id FROM mw_test6").FetchRows()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +144,7 @@ func TestLogHook_Debug(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	logged := q.SetLogger(dba.NewLogger(logger, 0, true))
-	count, _, err := dba.Scalar[int](logged.Add("SELECT COUNT(1) FROM log_test"))
+	count, _, err := logged.Add("SELECT COUNT(1) FROM log_test").FetchOne[int]()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +173,10 @@ func TestLogHook_SlowQuery(t *testing.T) {
 
 	// 1ns 阈值，任何查询都算慢
 	logged := q.SetLogger(dba.NewLogger(logger, 1*time.Nanosecond, true))
-	logged.Add("SELECT 1").Get(new(int))
+	_, _, err := logged.Add("SELECT 1").FetchOne[int]()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	output := buf.String()
 	if !strings.Contains(output, "SLOW SQL") {
@@ -181,7 +195,10 @@ func TestLogHook_Error(t *testing.T) {
 
 	logged := q.SetLogger(dba.NewLogger(logger, 0, true))
 	// 查询不存在的表，触发错误
-	logged.Add("SELECT 1 FROM nonexistent_table").Get(new(int))
+	_, _, err := logged.Add("SELECT 1 FROM nonexistent_table").FetchOne[int]()
+	if err == nil {
+		t.Fatal("query on nonexistent table should error")
+	}
 
 	output := buf.String()
 	if !strings.Contains(output, "ERROR") {

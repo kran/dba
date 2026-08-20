@@ -7,12 +7,11 @@ dba 不把 SQL 翻译成方法调用,也不把它藏进对象模型——SQL 由
 ```go
 db, _ := dba.Open("pgx", dsn)
 
-var users []User
-err := db.Select("users", "status = #{1}", "active").
+users, err := db.Select("users", "status = #{1}", "active").
     AddIf(name != "", "AND name LIKE #{1}", "%"+name+"%").
     AddIf(len(ids) > 0, "AND id IN (#{1|expand})", ids).
     Add("ORDER BY created_at DESC").
-    List(&users)
+    FetchList[User]()
 ```
 
 核心性质一句话:**builder 不可变**。每个方法返回新实例,半成品查询可以安全地跨函数传递、缓存、分叉——这是分页、count 复用等模式的地基。
@@ -23,7 +22,7 @@ err := db.Select("users", "status = #{1}", "active").
 go get github.com/kran/dba
 ```
 
-依赖 `jmoiron/sqlx`。通过 `Open(driver, dsn)` 或 `NewFromSqlx(*sqlx.DB)` 创建,自动按驱动选择占位符格式(Postgres 系为 `$n`,其余为 `?`)与标识符 quoting(MySQL 反引号,其余 ANSI 双引号),可用 `Formatter`/`Quoter` 覆盖。
+依赖 `jmoiron/sqlx`。需要 **Go 1.27+**(范型方法)。通过 `Open(driver, dsn)` 或 `NewFromSqlx(*sqlx.DB)` 创建,自动按驱动选择占位符格式(Postgres 系为 `$n`,其余为 `?`)与标识符 quoting(MySQL 反引号,其余 ANSI 双引号),可用 `Formatter`/`Quoter` 覆盖。
 
 ## 模板语言
 
@@ -150,16 +149,16 @@ map                     → 完全手动, 给什么写什么
 
 生成器与工具函数之间通过三个约定变量名协作,全部基于 `${var:default}` 的晚绑定:
 
-**F —— 列集槽**。`Select` 生成 `${F:*}`,`Page` 通过 `Var(F, "COUNT(1)")` 把同一个 builder 分叉成计数查询。手写 SQL 想接入 `Page`,在主链嵌入 `${F:*}` 即可:
+**F —— 列集槽**。`Select` 生成 `${F:*}`,`FetchPage` 通过 `Var(F, "COUNT(1)")` 把同一个 builder 分叉成计数查询。手写 SQL 想接入 `FetchPage`,在主链嵌入 `${F:*}` 即可:
 
 ```go
 q := db.Add(`SELECT ${F:*} FROM orders o JOIN users u ON o.uid = u.id WHERE o.status = #{1}`, st)
-items, total, err := dba.Page[Order](q, 1, 20)
+items, total, err := q.FetchPage[Order](1, 20)
 ```
 
-`Page` 的计数是简单替换,**不适用于 GROUP BY / DISTINCT 查询**——那类查询请自行写 count。
+`FetchPage` 的计数是简单替换,**不适用于 GROUP BY / DISTINCT 查询**——那类查询请自行写 count。
 
-**O —— 排序槽**(可选优化)。把 ORDER BY 写成 `${order:ORDER BY id DESC}`,`Page` 的计数查询会清空它,省掉无意义的排序开销。裸写 ORDER BY 依然正确,只是计数多付排序。
+**O —— 排序槽**(可选优化)。把 ORDER BY 写成 `${order:ORDER BY id DESC}`,`FetchPage` 的计数查询会清空它,省掉无意义的排序开销。裸写 ORDER BY 依然正确,只是计数多付排序。
 
 **I —— INSERT 修饰槽**。`Insert` 生成 `INSERT ${I:} INTO ...`,默认为空。链式 `Add` 只能追加尾部(RETURNING / ON CONFLICT 天然可达),唯独 INSERT 与 INTO 之间是死角,此槽是唯一通气孔:
 
@@ -169,16 +168,36 @@ db.Var(dba.I, "IGNORE").Insert("users", u)   // INSERT IGNORE INTO ...
 
 ## 执行与扫描
 
+取结果的方法统一以 `Fetch` 前缀 (单一动词, IDE 补全即可看到全家族):
+
 ```go
-err  := q.List(&users)              // 多行 → slice 指针 (struct/基本类型)
-ms, err := q.ListMap()              // 多行 → []map[string]any (列集编译期未知时)
-found, err := q.Get(&user)          // 单行; 无结果 found=false, 不返回 ErrNoRows
-m, found, err := q.GetMap()         // 单行 → map
-v, found, err := dba.Scalar[int64](q) // 单值
-result, err := q.Exec()             // 非查询
-rows, err := q.Rows()               // 原始游标 (流式)
-sql, args, err := q.ToSQL()         // 只构建不执行
+// 单行: 严格 0..1 (0 行 → (零值,false,nil); 多于一行报错; "随便取一行"请写 LIMIT 1)
+u, found, err := q.FetchOne[User]()
+// 多行 (struct/基本类型; 单列标量查询同样可用)
+items, err := q.FetchList[User]()
+// 单值 (标量就是单行的退化形态)
+v, found, err := q.FetchOne[int64]()
+// 分页 (需 ${F} 槽)
+items, total, err := q.FetchPage[User](1, 20)
+// 键控: 查询版 IndexBy / GroupBy (重复键报错)
+m, err := q.FetchIndexed[int](func(u User) int { return u.ID })
+g, err := q.FetchGrouped[int](func(u User) int { return u.OrgID })
+// 动态列 (列集编译期未知)
+m, found, err := q.FetchOneMap()
+ms, err := q.FetchMaps()
+// 流式: 惰性迭代器 (break 安全; 每行判 err)
+for u, err := range q.Iter[User]() {
+    if err != nil { return err }
+    // ...
+}
+// 急切原始游标 (立即执行)
+rows, err := q.FetchRows()
+// 非取结果
+result, err := q.Exec()
+sql, args, err := q.ToSQL()
 ```
+
+`Fetch*` 均为范型方法 (Go 1.27+),值返回,不传 dest 指针。
 
 builder 上的错误(生成器入参非法、Batch 宽度不齐等)沿链累积,后续操作空转,在执行或 `ToSQL` 时统一返回;也可随时 `q.Error()` 检查。
 
@@ -227,19 +246,19 @@ func (u *User) BeforeCreate() error {
 userDao := dba.NewDao[User](db, "users")          // 默认主键 id, 可 .PK("uid") 覆盖
 
 id, err := userDao.Create(&u)                      // 返回自增/RETURNING 主键
-u, err  := userDao.GetByID(42)                     // 未找到返回 (nil, nil), 先判 nil
-u, err  := userDao.Get("email = #{1}", email)
-list, err := userDao.List("deleted = 0")
+u, ok, err  := userDao.GetByID(42)                 // 未找到 (零值,false,nil), 先判 ok
+u, ok, err  := userDao.FetchOne("email = #{1}", email) // 严格 0..1, 多于一行报错
+list, err := userDao.FetchList("deleted = 0")
 n, err  := userDao.Update(dba.H{"name": "x"}, "id = #{1}", 42)
 n, err  := userDao.Delete("id = #{1}", 42)
 ok, err := userDao.Exists("email = #{1}", email)
-items, total, err := userDao.Page(1, 20, "deleted = 0")
+items, total, err := userDao.FetchPage(1, 20, "deleted = 0")
 n, err  := userDao.Batch(users)                    // 批量插入, 返回影响行数
 ```
 
 设计要点:
 
-**未找到不是错误。** `Get`/`GetByID` 无结果返回 `(nil, nil)` 而非 `sql.ErrNoRows`——"没查到"是正常业务结果,调用方判 nil 即可,不必到处 `errors.Is`。
+**未找到不是错误。** `FetchOne`/`GetByID` 无结果返回 `(零值, false, nil)` 而非 `sql.ErrNoRows`——"没查到"是正常业务结果,调用方判 `ok` 即可,不必到处 `errors.Is`。`FetchOne` 是严格 0..1(多于一行报错,主键查询因此自检数据完整性);条件不保证唯一时用 `FetchList`。
 
 **Raw 系列保留完整链式能力。** `RawCreate`/`RawSelect`/`RawBatch` 返回 builder 而非直接执行,复杂需求(ON CONFLICT、RETURNING、追加条件)在 Dao 之上继续拼:
 
@@ -247,7 +266,7 @@ n, err  := userDao.Batch(users)                    // 批量插入, 返回影响
 err := userDao.RawCreate(&u).
     Add("ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name").
     Add("RETURNING " + "id").
-    Get(&u.ID)
+    FetchOne[int64]()
 ```
 
 **事务传递。** `dao.WithTx(tx)` 返回绑定到事务的 Dao 副本,原 Dao 不受影响:

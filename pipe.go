@@ -3,11 +3,12 @@ package dba
 import (
 	"errors"
 	"fmt"
-	"github.com/jmoiron/sqlx/reflectx"
 	"maps"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/jmoiron/sqlx/reflectx"
 )
 
 // RenderCtx 渲染上下文: 管道与宏的渲染出口。
@@ -242,7 +243,7 @@ var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
 
 func extractNamedArg(src any, name string) (any, error) {
 	rv := reflect.ValueOf(src)
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return nil, fmt.Errorf("dba: named args source is nil pointer")
 		}

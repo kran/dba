@@ -29,7 +29,7 @@ func TestPage_Basic(t *testing.T) {
 	q := setupPageTable(t)
 
 	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
-	items, total, err := dba.Page[PageItem](query, 1, 10)
+	items, total, err := query.FetchPage[PageItem](1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestPage_SecondPage(t *testing.T) {
 	q := setupPageTable(t)
 
 	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
-	items, total, err := dba.Page[PageItem](query, 2, 10)
+	items, total, err := query.FetchPage[PageItem](2, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestPage_LastPage(t *testing.T) {
 	q := setupPageTable(t)
 
 	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
-	items, total, err := dba.Page[PageItem](query, 3, 10)
+	items, total, err := query.FetchPage[PageItem](3, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestPage_WithWhere(t *testing.T) {
 	q := setupPageTable(t)
 
 	query := q.Add("SELECT ${F:*} FROM page_items WHERE cat = #{1} ORDER BY id", "a")
-	items, total, err := dba.Page[PageItem](query, 1, 10)
+	items, total, err := query.FetchPage[PageItem](1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestPage_WithJoin(t *testing.T) {
 		Add("WHERE a.name = #{1}", "alice").
 		Add("ORDER BY b.id")
 
-	items, total, err := dba.Page[BookRow](query, 2, 5)
+	items, total, err := query.FetchPage[BookRow](2, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,25 +135,17 @@ func TestPage_InvalidParams(t *testing.T) {
 
 	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
 
-	// page < 1 应当回退到第 1 页
-	items, total, err := dba.Page[PageItem](query, 0, 10)
-	if err != nil {
-		t.Fatal(err)
+	// page < 1 报错 (不再静默钳制)
+	if _, _, err := query.FetchPage[PageItem](0, 10); err == nil {
+		t.Fatal("expected error for page 0")
 	}
-	if total != 25 {
-		t.Errorf("expected total 25, got %d", total)
+	// size < 1 报错
+	if _, _, err := query.FetchPage[PageItem](1, -1); err == nil {
+		t.Fatal("expected error for size -1")
 	}
-	if len(items) != 10 {
-		t.Errorf("expected 10 items, got %d", len(items))
-	}
-
-	// size < 1 应当回退到 10
-	items2, _, err := dba.Page[PageItem](query, 1, -1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items2) != 10 {
-		t.Errorf("expected 10 items, got %d", len(items2))
+	// 边界值 1/1 合法
+	if _, _, err := query.FetchPage[PageItem](1, 1); err != nil {
+		t.Fatalf("page=1 size=1 should be valid, got %v", err)
 	}
 }
 
@@ -161,7 +153,7 @@ func TestPage_EmptyResult(t *testing.T) {
 	q := setupPageTable(t)
 
 	query := q.Add("SELECT ${F:*} FROM page_items WHERE cat = #{1} ORDER BY id", "nonexistent")
-	items, total, err := dba.Page[PageItem](query, 1, 10)
+	items, total, err := query.FetchPage[PageItem](1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

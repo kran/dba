@@ -111,8 +111,7 @@ func (d *Dao[T]) Create(data any) (int64, error) {
 
 	driver := d.q.driverName
 	if driver == "postgres" || driver == "pgx" || driver == "pq" {
-		var pk int64
-		_, err := d.q.Insert(d.table, data).Add("RETURNING " + d.quotedPK).Get(&pk)
+		pk, _, err := d.q.Insert(d.table, data).Add("RETURNING " + d.quotedPK).FetchOne[int64]()
 		return pk, err
 	}
 
@@ -140,8 +139,8 @@ func (d *Dao[T]) RawSelect(where string, args ...any) *SQL {
 	return d.q.Select(d.table, where, args...)
 }
 
-func (d *Dao[T]) Page(page, size int, where string, args ...any) ([]T, int64, error) {
-	return Page[T](d.RawSelect(where, args...), page, size)
+func (d *Dao[T]) FetchPage(page, size int, where string, args ...any) ([]T, int64, error) {
+	return d.RawSelect(where, args...).FetchPage[T](page, size)
 }
 
 // RawBatch bulk-inserts multiple records and returns a SQL builder for chaining.
@@ -189,52 +188,40 @@ func (d *Dao[T]) Delete(where string, args ...any) (int64, error) {
 }
 
 // GetByID fetches a single record by primary key.
-// 未找到时返回 (nil, nil) —— “无结果”是正常业务结果而非错误 (不返回 sql.ErrNoRows);
-// 调用方必须先判 nil 再解引用。
-func (d *Dao[T]) GetByID(id any) (*T, error) {
-	var v T
-	found, err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+d.quotedPK+" = #{1}", id).Get(&v)
-	if !found || err != nil {
-		return nil, err
-	}
-	return &v, err
+// 主键唯一, 内部走严格 FetchOne (>1 行即数据异常, 会报错)。
+// 未找到时返回 (零值, false, nil) —— “无结果”是正常业务结果而非错误
+// (不返回 sql.ErrNoRows); 调用方必须先判 ok 再使用返回的实体。
+func (d *Dao[T]) GetByID(id any) (T, bool, error) {
+	return d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+d.quotedPK+" = #{1}", id).FetchOne[T]()
 }
 
-// Get fetches a single record by condition.
-// 未找到时返回 (nil, nil) —— “无结果”是正常业务结果而非错误 (不返回 sql.ErrNoRows);
-// 调用方必须先判 nil 再解引用。
-func (d *Dao[T]) Get(where string, args ...any) (*T, error) {
-	var v T
-	found, err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).Get(&v)
-	if !found || err != nil {
-		return nil, err
-	}
-	return &v, err
+// FetchOne fetches a single record by condition (严格 0..1: 多于一行报错)。
+// 未找到时返回 (零值, false, nil) —— “无结果”是正常业务结果而非错误
+// (不返回 sql.ErrNoRows); 调用方必须先判 ok 再使用返回的实体。
+// 条件不保证唯一时请用 FetchList。
+func (d *Dao[T]) FetchOne(where string, args ...any) (T, bool, error) {
+	return d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).FetchOne[T]()
 }
 
-// List fetches multiple records by condition.
-func (d *Dao[T]) List(where string, args ...any) ([]T, error) {
-	var list []T
-	err := d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).List(&list)
-	return list, err
+// FetchList fetches multiple records by condition.
+func (d *Dao[T]) FetchList(where string, args ...any) ([]T, error) {
+	return d.q.Add("SELECT * FROM "+d.quotedTbl+" WHERE "+where, args...).FetchList[T]()
 }
 
-// All fetches all records from the table.
-func (d *Dao[T]) All() ([]T, error) {
-	var list []T
-	err := d.q.Add("SELECT * FROM " + d.quotedTbl).List(&list)
-	return list, err
+// FetchAll fetches all records from the table.
+func (d *Dao[T]) FetchAll() ([]T, error) {
+	return d.q.Add("SELECT * FROM " + d.quotedTbl).FetchList[T]()
 }
 
 // Count returns the number of matching records.
 func (d *Dao[T]) Count(where string, args ...any) (int64, error) {
-	count, _, err := Scalar[int64](d.q.Add("SELECT COUNT(1) FROM "+d.quotedTbl+" WHERE "+where, args...))
+	count, _, err := d.q.Add("SELECT COUNT(1) FROM "+d.quotedTbl+" WHERE "+where, args...).FetchOne[int64]()
 	return count, err
 }
 
 // CountAll returns the total number of records in the table.
 func (d *Dao[T]) CountAll() (int64, error) {
-	count, _, err := Scalar[int64](d.q.Add("SELECT COUNT(1) FROM " + d.quotedTbl))
+	count, _, err := d.q.Add("SELECT COUNT(1) FROM " + d.quotedTbl).FetchOne[int64]()
 	return count, err
 }
 

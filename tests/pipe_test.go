@@ -131,7 +131,7 @@ func TestSetLoggerCopyOnWriteIsolation(t *testing.T) {
 	q2 := q.SetLogger(func(ctx context.Context, begin time.Time, query string, args []any, err error) {
 	})
 	// logger 隔离: 原实例无 logger 也能正常执行 (编译/运行不炸即可)
-	if _, err := q.Add("SELECT 1").Get(&struct{}{}); err != nil {
+	if _, _, err := q.Add("SELECT 1").FetchOne[struct{}](); err != nil {
 		t.Logf("get err: %v", err) // sqlite 无表, 报错正常; 只要不 panic
 	}
 	// 新实例有 logger 且正常 (ToSQL 不炸)

@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"iter"
 	"maps"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -251,9 +253,7 @@ func (d *SQL) Vars(vars map[string]Node) *SQL {
 		return clone
 	}
 	clone.varNodes = maps.Clone(clone.varNodes) // copy-on-write
-	for k, v := range vars {
-		clone.varNodes[k] = v
-	}
+	maps.Copy(clone.varNodes, vars)
 	return clone
 }
 
@@ -360,19 +360,20 @@ func (d *SQL) BatchInsert(table string, entities []any) *SQL {
 	return d.Add(insertHead).Batch(rows)
 }
 
-// List scans multiple rows into a slice pointer (struct/basic types, sqlx mapping).
-// For dynamic queries with unknown columns use ListMap.
-func (d *SQL) List(dest interface{}) error {
+// FetchList scans multiple rows and returns them as a slice (struct/basic
+// types, sqlx mapping). For dynamic queries with unknown columns use FetchMaps.
+func (d *SQL) FetchList[T any]() ([]T, error) {
+	var list []T
 	_, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
-		return nil, sqlx.SelectContext(ctx, d.executor, dest, query, args...)
+		return nil, sqlx.SelectContext(ctx, d.executor, &list, query, args...)
 	})
-	return err
+	return list, err
 }
 
-// ListMap scans multiple rows into a slice of maps — for queries whose
+// FetchMaps scans multiple rows into a slice of maps — for queries whose
 // columns are not known at compile time.
-func (d *SQL) ListMap() ([]map[string]any, error) {
-	rows, err := d.Rows()
+func (d *SQL) FetchMaps() ([]map[string]any, error) {
+	rows, err := d.FetchRows()
 	if err != nil {
 		return nil, err
 	}
@@ -388,25 +389,136 @@ func (d *SQL) ListMap() ([]map[string]any, error) {
 	return ms, rows.Err()
 }
 
-// Get scans a single row. Returns (false, nil) when no row is found.
-func (d *SQL) Get(dest any) (found bool, err error) {
-	_, err = d.execute(func(ctx context.Context, query string, args []any) (any, error) {
-		return nil, sqlx.GetContext(ctx, d.executor, dest, query, args...)
-	})
-
+// FetchOne scans a single row and returns it by value.
+// 严格 0..1: 无行 → (零值, false, nil); 多于一行 → 报错 (多取一行检测,
+// 抓住漏写 LIMIT 1 的 bug)。需要“随便取一行”时在 SQL 里显式写 LIMIT 1。
+func (d *SQL) FetchOne[T any]() (T, bool, error) {
+	rows, err := d.FetchRows()
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
+		var zero T
+		return zero, false, err
 	}
-	return true, nil
+	defer rows.Close()
+	return fetchOneRows[T](rows)
 }
 
-// GetMap scans a single row into a map — for queries whose columns are not
-// known at compile time. found=false (nil map) when no row matches.
-func (d *SQL) GetMap() (map[string]any, bool, error) {
-	rows, err := d.Rows()
+// fetchOneRows 严格 0..1 的单行扫描 (FetchOne 主体)。
+func fetchOneRows[T any](rows *sqlx.Rows) (T, bool, error) {
+	var v T
+	if !rows.Next() {
+		var zero T
+		if err := rows.Err(); err != nil {
+			return zero, false, err
+		}
+		return zero, false, nil
+	}
+	if err := scanRow(rows, &v); err != nil {
+		var zero T
+		return zero, false, err
+	}
+	if rows.Next() {
+		var zero T
+		return zero, false, fmt.Errorf("dba: fetch one: query returned more than one row")
+	}
+	return v, true, rows.Err()
+}
+
+// Iter returns a lazy iterator over the rows (struct/basic types, sqlx
+// mapping). 惰性: 查询在 for-range 开始时才执行; break 提前退出会正确释放
+// 连接。每行需判 err (iter.Seq2[T, error] 的固有形态)。
+//
+//	for u, err := range q.Iter[User]() {
+//	    if err != nil {
+//	        return err
+//	    }
+//	    // ...
+//	}
+func (d *SQL) Iter[T any]() iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		rows, err := d.FetchRows()
+		if err != nil {
+			var zero T
+			yield(zero, err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v T
+			if err := scanRow(rows, &v); err != nil {
+				var zero T
+				yield(zero, err)
+				return
+			}
+			if !yield(v, nil) {
+				return // break: 连接由 defer 释放
+			}
+		}
+		if err := rows.Err(); err != nil {
+			var zero T
+			yield(zero, err)
+		}
+	}
+}
+
+// sqlScannerType database/sql.Scanner 的反射类型。
+var sqlScannerType = reflect.TypeFor[sql.Scanner]()
+
+// scanRow 按 FetchList/FetchOne 同一套分流逻辑扫描单行:
+// 标量 / Scanner 实现者 / 无导出映射字段的 struct (如 time.Time) → Scan;
+// 其余 struct → StructScan (sqlx 映射)。
+//
+// 指针类型 T (如 *User) 与 FetchList 行为对齐: 全层级解引用后再判定
+// (reflectx.Deref 只解一层, 直接照搬会把 *User 误判为标量), struct 路径先
+// 分配内层指针再 StructScan, 保证 FetchOne[*User]/Iter[*User] 可用。
+func scanRow(rows *sqlx.Rows, dest any) error {
+	v := reflect.ValueOf(dest)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return errors.New("dba: scan: internal dest must be a non-nil pointer")
+	}
+
+	elem := v.Type().Elem()
+	base := elem
+	for base.Kind() == reflect.Pointer {
+		base = base.Elem()
+	}
+
+	if isScannableForScan(base) {
+		return rows.Scan(dest) // 标量指针链由 driver 的 convertAssign 分配
+	}
+
+	if elem.Kind() == reflect.Pointer {
+		// dest 是 **T (T 为 struct): 分配内层指针并写回调用方变量,
+		// StructScan 收到 *T (指向新分配内存, 与 sqlx 扫 []*T 同机制)
+		inner := reflect.New(base)
+		v.Elem().Set(inner)
+		dest = inner.Interface()
+	}
+	return rows.StructScan(dest)
+}
+
+// isScannableForScan 镜像 sqlx 的 isScannable 判定 (与 FetchList/FetchOne 行为一致):
+//
+//  1. *T 或 T 实现 sql.Scanner (指针方法集覆盖值接收者)
+//  2. 非 struct 类型 (int/string/[]byte/...)
+//  3. struct 但无导出映射字段 (time.Time: wall/ext/loc 均未导出)
+//
+// 注: 此处用包级 mapper (与 sqlx 默认 mapper 同规则) 数导出映射字段;
+// 与 sqlx 自身的 isScannable 相同, 只关心“导出字段数”这一粗粒度事实。
+func isScannableForScan(t reflect.Type) bool {
+	if reflect.PointerTo(t).Implements(sqlScannerType) {
+		return true
+	}
+	if t.Kind() != reflect.Struct {
+		return true
+	}
+	return len(mapper.TypeMap(t).Index) == 0
+}
+
+// FetchOneMap scans a single row into a map — for queries whose columns are
+// not known at compile time. 与 FetchOne 同契约: 严格 0..1, 多于一行报错。
+// found=false (nil map) when no row matches.
+func (d *SQL) FetchOneMap() (map[string]any, bool, error) {
+	rows, err := d.FetchRows()
 	if err != nil {
 		return nil, false, err
 	}
@@ -422,6 +534,9 @@ func (d *SQL) GetMap() (map[string]any, bool, error) {
 	if err := rows.MapScan(m); err != nil {
 		return nil, false, err
 	}
+	if rows.Next() {
+		return nil, false, fmt.Errorf("dba: fetch one map: query returned more than one row")
+	}
 	return m, true, nil
 }
 
@@ -436,8 +551,9 @@ func (d *SQL) Exec() (sql.Result, error) {
 	return result.(sql.Result), nil
 }
 
-// Rows returns a raw *sqlx.Rows cursor for streaming.
-func (d *SQL) Rows() (*sqlx.Rows, error) {
+// FetchRows returns a raw *sqlx.Rows cursor (查询立即执行, 适合流式场景;
+// 惰性流式请用 Iter)。
+func (d *SQL) FetchRows() (*sqlx.Rows, error) {
 	result, err := d.execute(func(ctx context.Context, query string, args []any) (any, error) {
 		return d.executor.QueryxContext(ctx, query, args...)
 	})
@@ -665,8 +781,8 @@ func (d *SQL) renderMacro(bw *buildRenderCtx, it item) error {
 // splitKeyPipe 分割 "key|pipe" 内容; 两端空白容忍 (与 $ 变量一致)。
 // hasPipe=false 表示内容未声明管道 (用宏默认或 bind)。
 func splitKeyPipe(content string) (key, pipe string, hasPipe bool) {
-	if idx := strings.IndexByte(content, '|'); idx >= 0 {
-		return strings.TrimSpace(content[:idx]), strings.TrimSpace(content[idx+1:]), true
+	if before, after, ok := strings.Cut(content, "|"); ok {
+		return strings.TrimSpace(before), strings.TrimSpace(after), true
 	}
 	return strings.TrimSpace(content), "", false // 无管道: renderMacro 用宏默认
 }
