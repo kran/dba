@@ -34,9 +34,10 @@ go get github.com/kran/dba
 Depends on `jmoiron/sqlx`. Requires **Go 1.27+** (generic methods). Create via
 `Open(driver, dsn)` or
 `NewFromSqlx(*sqlx.DB)`; placeholder format is chosen automatically by driver
-(`$n` for the Postgres family, `?` otherwise) and identifier quoting too
-(MySQL backticks, ANSI double quotes elsewhere), overridable with
-`Formatter`/`Quoter`.
+(`$n` for the Postgres family, `?` otherwise), identifier quoting too
+(MySQL backticks, ANSI double quotes elsewhere), and the row-limiting clause
+dialect (SQL:2008 standard by default, `LIMIT/OFFSET` for mysql/sqlite) —
+each overridable with `Formatter`/`Quoter`/`Pager`.
 
 ## Template language
 
@@ -197,11 +198,19 @@ items, total, err := q.FetchPage[Order](1, 20)
 ```
 
 `FetchPage`'s count is a plain substitution — **not for GROUP BY / DISTINCT
-queries**; write your own count for those.
+queries**; write your own count for those. The row-limiting clause defaults
+to the SQL:2008 standard `OFFSET m ROWS FETCH NEXT n ROWS ONLY`, with
+mysql/sqlite automatically switching to `LIMIT/OFFSET`; override with
+`Pager()`. Note that SQL Server / Oracle / DB2 require ORDER BY — the query
+must carry an `${order:...}` slot or a bare ORDER BY.
 
-**O — sort slot** (optional optimization). Write ORDER BY as
-`${order:ORDER BY id DESC}` and `FetchPage`'s count query clears it, saving a
-pointless sort. A bare ORDER BY still works, just pays the sort on the count.
+**O — sort slot** (strongly recommended). Write ORDER BY as
+`${order:ORDER BY id DESC}` and `FetchPage`'s count query clears it. This is
+more than saving a pointless sort: on PostgreSQL / SQL Server an ORDER BY
+over a non-aggregated source column in an aggregate query is a **hard error**,
+and SQL Server's OFFSET...FETCH additionally *requires* ORDER BY on the data
+query — only the `${order}` slot satisfies both at once. A bare ORDER BY happens
+to work on lenient dialects like SQLite, but errors on PG / SQL Server.
 
 **I — INSERT modifier slot.** `Insert` generates `INSERT ${I:} INTO ...`,
 empty by default. Chained `Add` can only append to the tail (RETURNING /
@@ -225,7 +234,8 @@ u, found, err := q.FetchOne[User]()
 items, err := q.FetchList[User]()
 // single value (a scalar is a degenerate one-row case)
 v, found, err := q.FetchOne[int64]()
-// page + count (requires the ${F} slot)
+// page + count (requires the ${F} slot; standard clause by default,
+// LIMIT for mysql/sqlite, Pager() overridable)
 items, total, err := q.FetchPage[User](1, 20)
 // keyed: query-level IndexBy / GroupBy (duplicate keys error)
 m, err := q.FetchIndexed[int](func(u User) int { return u.ID })

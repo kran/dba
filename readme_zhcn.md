@@ -22,7 +22,7 @@ users, err := db.Select("users", "status = #{1}", "active").
 go get github.com/kran/dba
 ```
 
-依赖 `jmoiron/sqlx`。需要 **Go 1.27+**(范型方法)。通过 `Open(driver, dsn)` 或 `NewFromSqlx(*sqlx.DB)` 创建,自动按驱动选择占位符格式(Postgres 系为 `$n`,其余为 `?`)与标识符 quoting(MySQL 反引号,其余 ANSI 双引号),可用 `Formatter`/`Quoter` 覆盖。
+依赖 `jmoiron/sqlx`。需要 **Go 1.27+**(范型方法)。通过 `Open(driver, dsn)` 或 `NewFromSqlx(*sqlx.DB)` 创建,自动按驱动选择占位符格式(Postgres 系为 `$n`,其余为 `?`)、标识符 quoting(MySQL 反引号,其余 ANSI 双引号)与分页子句方言(默认 SQL:2008 标准,MySQL/sqlite 系为 LIMIT/OFFSET),分别可用 `Formatter`/`Quoter`/`Pager` 覆盖。
 
 ## 模板语言
 
@@ -156,9 +156,9 @@ q := db.Add(`SELECT ${F:*} FROM orders o JOIN users u ON o.uid = u.id WHERE o.st
 items, total, err := q.FetchPage[Order](1, 20)
 ```
 
-`FetchPage` 的计数是简单替换,**不适用于 GROUP BY / DISTINCT 查询**——那类查询请自行写 count。
+`FetchPage` 的计数是简单替换,**不适用于 GROUP BY / DISTINCT 查询**——那类查询请自行写 count。分页子句默认渲染为 SQL:2008 标准语法 `OFFSET m ROWS FETCH NEXT n ROWS ONLY`,mysql/sqlite 系自动切 `LIMIT/OFFSET`;可用 `Pager()` 覆盖。注意 SQL Server/Oracle/DB2 强制 ORDER BY——查询必须带 `${order:...}` 槽或裸 ORDER BY。
 
-**O —— 排序槽**(可选优化)。把 ORDER BY 写成 `${order:ORDER BY id DESC}`,`FetchPage` 的计数查询会清空它,省掉无意义的排序开销。裸写 ORDER BY 依然正确,只是计数多付排序。
+**O —— 排序槽**(强建议)。把 ORDER BY 写成 `${order:ORDER BY id DESC}`,`FetchPage` 的计数查询会清空它。这不只是省一次无意义排序:PostgreSQL / SQL Server 下聚合查询的 ORDER BY 引用源列是**硬错误**,而 SQL Server 的 OFFSET...FETCH 又强制数据查询带 ORDER BY——两者只能靠 `${order}` 槽同时满足。裸写 ORDER BY 在 sqlite 等宽松方言下能跑,在 PG/mssql 下会直接报错。
 
 **I —— INSERT 修饰槽**。`Insert` 生成 `INSERT ${I:} INTO ...`,默认为空。链式 `Add` 只能追加尾部(RETURNING / ON CONFLICT 天然可达),唯独 INSERT 与 INTO 之间是死角,此槽是唯一通气孔:
 
@@ -177,7 +177,7 @@ u, found, err := q.FetchOne[User]()
 items, err := q.FetchList[User]()
 // 单值 (标量就是单行的退化形态)
 v, found, err := q.FetchOne[int64]()
-// 分页 (需 ${F} 槽)
+// 分页 (需 ${F} 槽; 默认标准语法, mysql/sqlite 自动切 LIMIT, Pager() 可覆盖)
 items, total, err := q.FetchPage[User](1, 20)
 // 键控: 查询版 IndexBy / GroupBy (重复键报错)
 m, err := q.FetchIndexed[int](func(u User) int { return u.ID })

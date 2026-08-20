@@ -1,8 +1,12 @@
 package dba_test
 
 import (
-	"github.com/kran/dba"
+	"context"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/kran/dba"
 )
 
 type PageItem struct {
@@ -162,5 +166,67 @@ func TestPage_EmptyResult(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Errorf("expected 0 items, got %d", len(items))
+	}
+}
+
+// 自定义 Pager 全链路: FetchPage 追加的子句来自 pager 渲染, 而非硬编码 LIMIT
+func TestPage_CustomPager(t *testing.T) {
+	q := setupPageTable(t)
+
+	var queries []string
+	q = q.SetLogger(func(_ context.Context, _ time.Time, query string, _ []any, _ error) {
+		queries = append(queries, query)
+	}).Pager(func(limit, offset string) string {
+		return "LIMIT " + limit + " OFFSET " + offset + " /*custom-pager*/"
+	})
+
+	query := q.Add("SELECT ${F:*} FROM page_items ORDER BY id")
+	items, total, err := query.FetchPage[PageItem](2, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 25 || len(items) != 10 || items[0].ID != 11 {
+		t.Errorf("total=%d len=%d first=%+v", total, len(items), items[0])
+	}
+
+	// count 查询 (第一) 不含分页子句; data 查询 (第二) 含自定义 pager 产物
+	if len(queries) != 2 {
+		t.Fatalf("expected 2 executed queries, got %d", len(queries))
+	}
+	if strings.Contains(queries[0], "custom-pager") {
+		t.Errorf("count query should not carry pager clause: %q", queries[0])
+	}
+	if !strings.Contains(queries[1], "/*custom-pager*/") {
+		t.Errorf("data query missing custom pager clause: %q", queries[1])
+	}
+}
+
+// count 查询必须清空 ${order} 排序槽: 严格方言 (PG/mssql) 下聚合查询带
+// ORDER BY 源列是硬错误, 且 SQL Server 的 OFFSET...FETCH 强制数据查询带
+// ORDER BY —— 两者只能靠 ${order} 槽同时满足
+func TestPage_CountQueryClearsOrderSlot(t *testing.T) {
+	q := setupPageTable(t)
+
+	var queries []string
+	q = q.SetLogger(func(_ context.Context, _ time.Time, query string, _ []any, _ error) {
+		queries = append(queries, query)
+	})
+
+	query := q.Add("SELECT ${F:*} FROM page_items ${order:ORDER BY id DESC}")
+	if _, total, err := query.FetchPage[PageItem](1, 10); err != nil || total != 25 {
+		t.Fatalf("total=%d err=%v", total, err)
+	}
+
+	if len(queries) != 2 {
+		t.Fatalf("expected 2 executed queries, got %d", len(queries))
+	}
+	countSQL := queries[0]
+	dataSQL := queries[1]
+
+	if strings.Contains(countSQL, "ORDER BY") {
+		t.Errorf("count query must not carry ORDER BY: %q", countSQL)
+	}
+	if !strings.Contains(dataSQL, "ORDER BY id DESC") {
+		t.Errorf("data query missing ORDER BY: %q", dataSQL)
 	}
 }

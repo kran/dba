@@ -32,10 +32,15 @@ const F = "F"
 //	db.Var(I, "IGNORE").Insert("users", u)  // INSERT IGNORE INTO ...
 const I = "I"
 
-// O 是排序槽位变量名。Page 的 count 查询会 Var(O, "") 清空它,
-// 因此接入 Page 的查询应把 ORDER BY 写成 ${O:...} 而非裸文本:
+// O 是排序槽位变量名。FetchPage 发两条查询, 对 ORDER BY 的要求恰好相反:
 //
-//	q.Add("SELECT ... WHERE x ${O:ORDER BY id DESC}")
+//	data 查询: 保留 (SQL Server 的 OFFSET...FETCH 强制 ORDER BY)
+//	count 查询: 清空 (聚合查询带 ORDER BY 源列在 PG/mssql 是硬错误)
+//
+// 因此接入 FetchPage 的查询应把 ORDER BY 写成 ${order:...} 而非裸文本
+// (变量名是字面匹配, 槽名 "order" 与 const 值一致):
+//
+//	q.Add("SELECT ... WHERE x ${order:ORDER BY id DESC}")
 const O = "order"
 
 // H is a shorthand for map[string]any.
@@ -72,6 +77,28 @@ func MySQLQuoter(s string) string { return "`" + strings.ReplaceAll(s, "`", "``"
 // AnsiQuoter wraps identifiers in double quotes.
 func AnsiQuoter(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
+// Pager generates the row-limiting clause appended by FetchPage.
+//
+// 入参是两个占位符 token (如 "#{1}", "#{2}"), pager 决定它们在子句中的位置;
+// FetchPage 始终按 (limit=size, offset) 的语义顺序传参, 因此 pager 可以自由
+// 调换两个 token 的位置 (方言差异), 而不影响调用方。
+type Pager func(limit, offset string) string
+
+// LimitOffsetPager generates "LIMIT n OFFSET m"
+// (mysql/sqlite 系; NewFromSqlx 对这两族 driver 自动选用)。
+func LimitOffsetPager(limit, offset string) string {
+	return "LIMIT " + limit + " OFFSET " + offset
+}
+
+// OffsetFetchPager generates "OFFSET m ROWS FETCH NEXT n ROWS ONLY"
+// (SQL:2008 标准, 默认: PostgreSQL / SQL Server 2012+ / Oracle 12c+ /
+// DB2 11.1+ 均支持)。
+// 注意: SQL Server/Oracle/DB2 强制要求 ORDER BY —— 查询必须带 ${order:...} 槽
+// 或裸 ORDER BY。
+func OffsetFetchPager(limit, offset string) string {
+	return "OFFSET " + offset + " ROWS FETCH NEXT " + limit + " ROWS ONLY"
+}
+
 type Node struct {
 	Text string
 	Args []any
@@ -90,23 +117,34 @@ type SQL struct {
 	err        error
 	quoter     Quoter
 	formatter  Formatter
+	pager      Pager
 	driverName string
 	logger     LogFunc // 执行日志回调 (nil = 静默)
 }
 
 // NewFromSqlx creates a SQL builder from a sqlx.DB. Auto-detects driver for
-// placeholder formatter and identifier quoting.
+// placeholder formatter, identifier quoting, and FetchPage's row-limiting
+// clause (SQL:2008 OFFSET...FETCH by default; LIMIT/OFFSET for mysql/sqlite).
 func NewFromSqlx(db *sqlx.DB) *SQL {
 	driver := db.DriverName()
 	quoter := AnsiQuoter
 	format := QmarkFormat
+	pager := OffsetFetchPager // SQL:2008 标准 (OFFSET...FETCH), 默认
 
 	if driver == "postgres" || driver == "pgx" || driver == "pq" {
 		quoter = AnsiQuoter
 		format = DollarFormat
-	} else if driver == "mysql" {
+	}
+
+	if driver == "mysql" {
 		quoter = MySQLQuoter
 		format = QmarkFormat
+		pager = LimitOffsetPager // mysql 系只认 LIMIT/OFFSET
+	}
+
+	// sqlite 系只认 LIMIT/OFFSET (modernc 注册为 "sqlite", mattn 为 "sqlite3")
+	if driver == "sqlite" || driver == "sqlite3" {
+		pager = LimitOffsetPager
 	}
 
 	return &SQL{
@@ -119,6 +157,7 @@ func NewFromSqlx(db *sqlx.DB) *SQL {
 		ctx:        context.Background(),
 		quoter:     quoter,
 		formatter:  format,
+		pager:      pager,
 		driverName: driver,
 	}
 }
@@ -151,6 +190,7 @@ func (d *SQL) copy() *SQL {
 		err:        d.err,
 		quoter:     d.quoter,
 		formatter:  d.formatter,
+		pager:      d.pager,
 		driverName: d.driverName,
 	}
 	copy(clone.mainNodes, d.mainNodes)
@@ -180,6 +220,14 @@ func (d *SQL) Quoter(quoter Quoter) *SQL {
 func (d *SQL) Formatter(formatter Formatter) *SQL {
 	clone := d.copy()
 	clone.formatter = formatter
+	return clone
+}
+
+// Pager returns a new builder with the given row-limiting clause renderer
+// (FetchPage 追加的分页子句模板, 覆盖 driverName 自动探测)。
+func (d *SQL) Pager(pager Pager) *SQL {
+	clone := d.copy()
+	clone.pager = pager
 	return clone
 }
 

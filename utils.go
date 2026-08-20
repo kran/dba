@@ -72,12 +72,15 @@ func (d *SQL) FetchGrouped[K comparable, V any](key func(V) K) (map[K][]V, error
 // Constraints: no GROUP BY / DISTINCT in the F slot content (the count query
 // reuses the same template).
 //
-// ORDER BY should live in the ${O:...} slot (the count query clears it with
-// Var(O, "") — a bare ORDER BY still works but the count query pays the
-// sort). Example:
+// ORDER BY must live in the ${order:...} slot: the count query clears it with
+// Var(O, "") — 严格方言 (PG/mssql) 下聚合查询带 ORDER BY 源列是硬错误,
+// 且 SQL Server 的 OFFSET...FETCH 强制数据查询带 ORDER BY, 两者只能靠
+// ${order} 槽同时满足。Example:
 //
-//	q.Add("SELECT ... WHERE x ${O:ORDER BY id DESC}") // then q.FetchPage[User](1, 20)
+//	q.Add("SELECT ... WHERE x ${order:ORDER BY id DESC}") // then q.FetchPage[User](1, 20)
 //
+// 分页子句默认 SQL:2008 标准 (OFFSET...FETCH), mysql/sqlite 系自动切
+// LIMIT/OFFSET, 可用 Pager() 覆盖; SQL Server/Oracle/DB2 系强制 ORDER BY。
 // page/size 必须 >= 1, 否则报错 (不静默钳制, 尽早暴露调用方的参数 bug)。
 // The total==0 case skips the data query entirely.
 func (d *SQL) FetchPage[T any](page, size int) ([]T, int64, error) {
@@ -97,14 +100,20 @@ func (d *SQL) FetchPage[T any](page, size int) ([]T, int64, error) {
 		return nil, 0, fmt.Errorf("dba: fetch page: query requires ${%s:...} (main chain)", F)
 	}
 
-	// count 查询: F → COUNT(1), 并清空排序变量 (count 不需要排序, 白付)
+	// count 查询: F → COUNT(1), 并清空排序槽。
+	// 注意: 这不是纯性能优化 (省一次无意义排序) —— 严格方言下
+	// (PostgreSQL / SQL Server / 严格模式 MySQL) 聚合查询的 ORDER BY
+	// 引用非聚合源列是硬错误 (PG: "column must appear in the GROUP BY
+	// clause"; mssql: "is invalid in the order by clause")。SQL Server 的
+	// OFFSET...FETCH 又强制数据查询带 ORDER BY —— 两者只能靠 ${order} 槽
+	// 同时满足: 数据查询保留, count 查询清空。
 	total, _, err := d.Var(F, "COUNT(1)").Var(O, "").FetchOne[int64]()
 	var items []T
 	if err != nil || total == 0 {
 		return items, total, err
 	}
 	offset := (page - 1) * size
-	items, err = d.Add("LIMIT #{1} OFFSET #{2}", size, offset).FetchList[T]()
+	items, err = d.Add(d.pager("#{1}", "#{2}"), size, offset).FetchList[T]()
 	return items, total, err
 }
 
